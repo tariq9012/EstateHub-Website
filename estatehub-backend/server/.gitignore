@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+*.local
+.env
+
+# Runtime uploads — never commit real user-uploaded files (avatars, property photos,
+# verification/license documents). Directory structure is preserved via .gitkeep.
+uploads/*
+!uploads/*/
+!uploads/*/.gitkeep

@@ -1,0 +1,9 @@
+node_modules
+dist
+.DS_Store
+*.local
+
+# Environment files — never commit real values (see .env.example for the variable names)
+.env
+.env.local
+.env.*.local
