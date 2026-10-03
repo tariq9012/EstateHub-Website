@@ -52,11 +52,24 @@ function toOrigin(value) {
 // FRONTEND_URL (also used for password-reset links) and CORS_ALLOWED_ORIGINS (extra preview/custom domains) are added.
 // Nothing outside this list is ever echoed back, and '*' is never accepted.
 const clientOrigins = csv(process.env.CLIENT_ORIGIN || (isProduction ? '' : 'http://localhost:5173'));
+
+// Vercel Services (one project, one public origin): the site and the API are the SAME origin, so browser calls to
+// /api never need CORS at all. These two system variables hold THIS deployment's own hostnames (no scheme), so the
+// app's own origin is always accepted by the Origin check on /auth/refresh and /auth/logout without hard-coding a
+// URL that is unknown until the first deploy. They are only present when "Automatically expose System Environment
+// Variables" is enabled for the project (the default); FRONTEND_URL below always works regardless.
+const vercelOrigins = onVercel
+  ? [process.env.VERCEL_PROJECT_PRODUCTION_URL, process.env.VERCEL_URL].filter(Boolean).map((host) => `https://${host}`)
+  : [];
+
 // Trailing slashes are stripped so links built as `${frontendUrl}/reset-password` never contain '//'.
-const frontendUrl = (process.env.FRONTEND_URL || clientOrigins[0] || 'http://localhost:5173').trim().replace(/\/+$/, '');
+// Password-reset emails use this: set FRONTEND_URL to your final public URL (custom domain if you have one).
+const frontendUrl = (
+  process.env.FRONTEND_URL || clientOrigins[0] || vercelOrigins[0] || 'http://localhost:5173'
+).trim().replace(/\/+$/, '');
 const allowedOrigins = Array.from(
   new Set(
-    [...clientOrigins, frontendUrl, ...csv(process.env.CORS_ALLOWED_ORIGINS)]
+    [...clientOrigins, frontendUrl, ...vercelOrigins, ...csv(process.env.CORS_ALLOWED_ORIGINS)]
       .filter((v) => v !== '*')
       .map(toOrigin)
       .filter(Boolean)
@@ -76,7 +89,13 @@ const problems = [...validateStorageEnv()];
 if (cookieSameSite === 'none' && !cookieSecure) problems.push('COOKIE_SAMESITE=none requires COOKIE_SECURE=true');
 if (isProduction) {
   if (!cookieSecure) problems.push('COOKIE_SECURE must be true in production');
-  if (!process.env.FRONTEND_URL && !process.env.CLIENT_ORIGIN) problems.push('FRONTEND_URL (or CLIENT_ORIGIN) is required in production');
+  if (!process.env.FRONTEND_URL && !process.env.CLIENT_ORIGIN && vercelOrigins.length === 0) {
+    problems.push('FRONTEND_URL (or CLIENT_ORIGIN) is required in production');
+  }
+  // A leftover local-development value would make the browser silently drop the refresh cookie on the real domain.
+  if (/^\.?localhost$/i.test(String(process.env.COOKIE_DOMAIN || '').trim())) {
+    problems.push('COOKIE_DOMAIN must be unset (or your real domain) in production — "localhost" would stop login persistence');
+  }
   if (String(process.env.JWT_ACCESS_SECRET).length < 32 || String(process.env.JWT_REFRESH_SECRET).length < 32) {
     problems.push('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must each be at least 32 characters in production');
   }

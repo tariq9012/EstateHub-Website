@@ -3,7 +3,11 @@
 // httpOnly refresh cookie automatically (credentials: 'include'), and
 // transparently retries once via /auth/refresh if a request comes back 401.
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// Where the API lives:
+//   production  same origin, '/api' (Vercel Services routes /api/* to the Express service) — nothing to configure.
+//   development VITE_API_URL from .env (e.g. http://localhost:5000/api); if unset, the local backend on port 5000.
+// A VITE_API_URL set at build time still wins everywhere, e.g. to point a build at a different API host.
+const BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000/api' : '/api');
 
 let accessToken = null;
 let onUnauthorized = null;

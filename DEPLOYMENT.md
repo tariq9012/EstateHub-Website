@@ -1,70 +1,62 @@
-# EstateHub — deployment guide (Vercel + Cloudflare R2 + MySQL)
+# EstateHub — deployment guide (Vercel Services + Cloudflare R2 + MySQL)
 
-Two Vercel projects from this one repository, one hosted MySQL database, two Cloudflare R2 buckets.
+**One Vercel project, one public origin**, built from this repository with Vercel Services:
 
-| Part | Where | Root directory |
-|---|---|---|
-| Frontend (React/Vite) | Vercel project A | `estatehub-react` |
-| Backend (Express API) | Vercel project B | `estatehub-backend/server` |
-| Database | hosted MySQL 8 (any provider) | — |
-| Files | Cloudflare R2: one **public** bucket, one **private** bucket | — |
-| Email | Gmail SMTP (unchanged) | — |
+```
+https://<your-project>.vercel.app/        → React/Vite frontend   (service "estatehub-react")
+https://<your-project>.vercel.app/api/*   → Express backend       (service "server")
+```
+
+| Part | Where |
+|---|---|
+| Frontend (React/Vite) + backend (Express) | ONE Vercel project, two services, routed by the root `vercel.json` |
+| Database | hosted MySQL 8 (any provider) |
+| Files | Cloudflare R2: one **public** bucket, one **private** bucket |
+| Email | Gmail SMTP (unchanged) |
 
 > **Never paste secrets into chat or commit them.** Type R2, database, JWT and Gmail values directly into
 > Vercel → Project → Settings → Environment Variables.
 
 ---
 
-## 0. Decisions you should know about
+## 0. How the pieces fit
 
-**Direct browser → R2 uploads.** Vercel Functions reject any request body over **4.5 MB**
-(`FUNCTION_PAYLOAD_TOO_LARGE`). EstateHub accepts 5 MB photos (up to 20 per request) and 10 MB documents, so
-sending files *through* the API would fail in production. In R2 mode the flow is:
+**Routing (root `vercel.json`).** `/api/(.*)` is listed first and goes to the Express service; everything else goes to
+the frontend service. Per Vercel's Services docs a service receives the **original** request path (the matched part is not
+stripped), and Express already mounts all routes under `/api` (`app.use('/api', …)`), so `GET /api/health` reaches
+Express as `/api/health` — there is no `/api/api`. The frontend service has its own SPA fallback so `/sign-in`, `/property-details/12`,
+`/reset-password?token=…`, `/admin-dashboard` … work when opened or refreshed. The `/api` rewrite is evaluated first, so the fallback never intercepts API calls.
 
-1. `…/direct/presign` — the API authenticates you, applies the same role/ownership/status/cap rules as before, checks
-   the declared type and size, and returns a **5-minute presigned PUT URL** for a *pending* key.
-2. The browser PUTs the file straight to R2.
-3. `…/direct/complete` — the API re-authorizes, reads the real object from R2 (size, **magic-byte content check**, declared
-   type must match), copies it from `pending/…` to its final key, deletes the pending object, and only then runs the
-   *existing* controller (photo caps, review-status rules, database insert). Anything invalid is deleted and refused.
+**The SPA fallback is deliberately narrow:** `/((?!@|__|src/|node_modules/|assets/)[^.]*)` → `/index.html`. It rewrites only *route-shaped* paths
+(no dot in the path; not `@…`, `__…`, `src/`, `node_modules/` or `assets/`). A catch-all `/(.*)` or `/((?!assets/).*)` also matches Vite's development
+modules (`/@vite/client`, `/@react-refresh`, `/src/main.jsx`). In production that is harmless (Vercel serves real files from `dist` before rewrites), but under `vercel dev` no
+built files exist, so those module requests were rewritten and the page stayed blank. React routes here never contain a dot, so none are affected.
 
-Local development is unchanged (`STORAGE_DRIVER=local`: multer + `./uploads`). In R2 mode the old multipart routes answer
-`409 DIRECT_UPLOAD_REQUIRED`, so nothing is ever written to Vercel's read-only disk.
+**Same origin ⇒ simpler auth.** The browser calls `/api/...` on the same origin it was loaded from. Production builds of the
+frontend default to `/api` (`src/api/apiClient.js`); `VITE_API_URL` is only for local development. Because the refresh cookie is
+first-party, use `COOKIE_SAMESITE=lax`, `COOKIE_SECURE=true` and **no** `COOKIE_DOMAIN` (host-only cookie, the safest scope; cookie path `/api/auth`).
+CORS is no longer involved for site→API calls (same origin); the allowlist remains for local development and an optional custom domain.
+`POST /api/auth/refresh` and `/api/auth/logout` still reject any request whose `Origin` header is not on the allowlist (CSRF guard); on Vercel
+the project's own production and deployment hostnames (`VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_URL`) are added automatically, plus `FRONTEND_URL`.
 
-**Two buckets, not one.** Cloudflare can only make a *whole bucket* public. Listing photos must be public; verification
-and licence documents must not. So photos/avatars live in a public bucket and documents in a private bucket that has
-**no** public access and no custom domain. (`R2_PUBLIC_BUCKET_NAME` and `R2_PRIVATE_BUCKET_NAME` must differ — the server
-refuses to start otherwise.)
+**Service bindings: none required.** The React app runs in the visitor's browser and reaches the API through the public same-origin
+`/api` route. The frontend service has no server-side code (static Vite build, no SSR/functions), so nothing calls the Express
+service from inside Vercel. Adding a binding would only create an unused internal URL.
 
-**What MySQL stores** (existing `VARCHAR(500)` columns — **no migration needed**):
+**Direct browser → R2 uploads.** Vercel Functions reject request bodies over **4.5 MB**, and EstateHub accepts 5 MB photos (up to 20 per request)
+and 10 MB documents, so files never pass through the API: the API authorizes and presigns, the browser PUTs to R2, then the API re-checks the real
+bytes (size, magic bytes, declared type) before saving anything. Details: `src/services/storage/r2Driver.js`.
 
-| Column | Value |
-|---|---|
-| `property_images.image_url`, `users.avatar_url` | public URL, e.g. `https://media.example.com/properties/12/<uuid>.jpg` |
-| `verification_documents.file_url` (initial + renewal) | bare private key, e.g. `verification/7/<uuid>.pdf` — never a URL |
-
-Private documents are read through `GET /api/verification/documents/:id/file`: the API checks owner-or-admin, then returns
-a **120-second presigned URL** (JSON). It is never stored. Old `/uploads/...` rows keep working until you migrate them (§9).
-
-**Cookies.** The refresh token is an `HttpOnly` cookie. Two different `*.vercel.app` hosts are *cross-site*
-(`vercel.app` is on the Public Suffix List), which forces `SameSite=None; Secure`, and Safari/other browsers that block
-third-party cookies can then break login persistence. **Strongly recommended:** put both apps under one domain you own,
-e.g. `estatehub.com` (frontend) and `api.estatehub.com` (backend). Then use `COOKIE_SAMESITE=lax` and it behaves like local dev.
-A cross-site `SameSite=None` setup also gets an `Origin` allow-list check on `/auth/refresh` and `/auth/logout` (CSRF guard).
+**Two buckets.** Cloudflare can only make a whole bucket public, so photos live in a public bucket and verification/renewal documents in a private bucket
+that is never public. MySQL stores a public URL for photos and a bare key for private documents (no schema change).
 
 ---
 
 ## 1. Hosted MySQL
 
-1. Create a MySQL 8 database at a provider of your choice (Aiven, TiDB Cloud, AWS RDS, DigitalOcean, Railway, …).
-2. Note host, port, database, user, password, and whether TLS is required (usually yes) and whether a CA certificate is provided.
-3. Apply the **existing** schema once to this **new, empty** database: run `estatehub-backend/database/schema.sql`
-   (plus any additive migration files you have applied locally) with the provider's console or `mysql` client.
-   Do **not** run it against a database that already holds data you care about.
-4. No schema change is required for R2.
-5. The app pins every connection to UTC (`SET time_zone = '+00:00'`); nothing to configure.
-
----
+1. Create a MySQL 8 database (Aiven, TiDB Cloud, AWS RDS, DigitalOcean, Railway, …). Note host, port, database, user, password, whether TLS is required and any CA certificate.
+2. Apply the **existing** `estatehub-backend/database/schema.sql` (plus any additive migrations you applied locally) once to this **new, empty** database. Never run it against a database that holds data you care about.
+3. No schema change is required for R2 or Services. The app pins every connection to UTC.
 
 ## 2. Cloudflare R2
 
@@ -83,13 +75,13 @@ A cross-site `SameSite=None` setup also gets an `Origin` allow-list check on `/a
 5. **Account ID:** shown on the R2 overview page (right-hand side) and in the dashboard URL. The endpoint
    (`https://<account-id>.r2.cloudflarestorage.com`) is derived from it in code — there is no `R2_ENDPOINT` variable.
 6. **CORS** (browsers PUT to R2 and the admin/agent UI fetches private documents). Bucket → Settings → **CORS Policy** → Add → JSON.
-   Replace the origins with yours (add every origin that serves the site; no `*`).
+   Replace the origins with yours. The site and API share ONE origin on Vercel Services, so the only browser origins that talk to R2 are `http://localhost:5173` (development) and your final production origin(s) — see §6. No `*`.
 
    *Public bucket* (browser uploads photos here; images themselves load via `<img>` and need no CORS):
    ```json
    [
      {
-       "AllowedOrigins": ["http://localhost:5173", "https://YOUR-FRONTEND.vercel.app", "https://www.yourdomain.com"],
+       "AllowedOrigins": ["http://localhost:5173", "https://YOUR-PROJECT.vercel.app", "https://www.yourdomain.com"],
        "AllowedMethods": ["PUT", "HEAD"],
        "AllowedHeaders": ["content-type"],
        "MaxAgeSeconds": 3600
@@ -100,7 +92,7 @@ A cross-site `SameSite=None` setup also gets an `Origin` allow-list check on `/a
    ```json
    [
      {
-       "AllowedOrigins": ["http://localhost:5173", "https://YOUR-FRONTEND.vercel.app", "https://www.yourdomain.com"],
+       "AllowedOrigins": ["http://localhost:5173", "https://YOUR-PROJECT.vercel.app", "https://www.yourdomain.com"],
        "AllowedMethods": ["GET", "PUT", "HEAD"],
        "AllowedHeaders": ["content-type"],
        "MaxAgeSeconds": 3600
@@ -126,9 +118,9 @@ None of these is ever exposed to the frontend; no `VITE_*` variable holds a cred
 
 ---
 
-## 3. Backend → Vercel (Project B)
+## 3. Commit, import and configure the Vercel project
 
-Install the two new packages locally first and commit the updated `package.json`/`package-lock.json`:
+Install the two R2 packages locally once and commit the updated lock file:
 
 ```bash
 cd estatehub-backend/server
@@ -136,126 +128,137 @@ npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
 npm pkg set scripts.storage:migrate-r2="node scripts/migrate-local-to-r2.js"
 ```
 
-Vercel → *Add New → Project* → import the repository, then:
+Delete the obsolete single-project files if they are still in your working copy (they are replaced by the root `vercel.json`):
+`estatehub-react/vercel.json`, `estatehub-backend/server/vercel.json`, `estatehub-backend/server/api/index.js`.
 
-| Setting | Value |
+Then:
+
+1. Commit and push (`vercel.json` must be at the **repository root**, next to `estatehub-react/` and `estatehub-backend/`).
+2. Vercel → **Add New → Project** → import the repository (or, if you already started the import, close and reopen that screen so Vercel re-reads the pushed `vercel.json`).
+3. **Root Directory:** leave as the repository root. **Application/Framework Preset:** **Services** (Build and Deployment settings). A project builds as services only when that preset is selected **and** `vercel.json` has a `services` key.
+4. Vercel should list two services — `server` (`estatehub-backend/server`, Express) and `estatehub-react` (`estatehub-react`, Vite). If it offers to generate rewrites or a catch-all to the backend, do **not** accept them: the file in the repo already routes `/api/*` → `server` and everything else → `estatehub-react`.
+5. Add the environment variables from §4, then **Deploy**.
+6. Do **not** create a second Vercel project for the frontend, and do not set `VITE_API_URL`.
+
+---
+
+## 4. Environment variables
+
+Derived from the variables the code actually reads (`process.env.*` in the backend, `import.meta.env.*` in the frontend). Vercel environment variables are
+project-level, so both services' builds can see them; Vite only embeds variables whose names start with `VITE_`, so none of the secrets below can reach the browser bundle.
+Add them for **Production**. For **Preview**, either leave them unset or point them at a separate staging database and separate R2 buckets — never reuse production data in previews.
+
+### A. Shared / project (Vercel system variables — nothing to add)
+| Name | Notes |
 |---|---|
-| Root Directory | `estatehub-backend/server` |
-| Framework Preset | **Other** |
-| Build Command | leave empty |
-| Output Directory | leave empty |
-| Install Command | default (`npm install`) |
-| Node.js Version | 20.x or 22.x |
+| `VERCEL`, `VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL` | Provided automatically when "Automatically expose System Environment Variables" is on (default). Used to trust this deployment's own origin. |
 
-`vercel.json` and `api/index.js` (already in the repo) send every request to the Express app; nothing calls `app.listen()` on Vercel.
+### B. Backend (service `server`)
+| Variable | Secret? | Value / notes |
+|---|---|---|
+| `NODE_ENV` | no | `production` |
+| `TRUST_PROXY` | no | `1` (so rate limiting sees the real client IP behind Vercel) |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` | no | from your MySQL provider |
+| `DB_PASSWORD` | **yes** | from your MySQL provider |
+| `DB_SSL` | no | `true` for hosted MySQL |
+| `DB_SSL_CA` | no (certificate) | CA PEM, newlines written as `\n` — only if your provider supplies one |
+| `DB_SSL_REJECT_UNAUTHORIZED` | no | leave unset (defaults to true) |
+| `DB_CONNECTION_LIMIT`, `DB_CONNECT_TIMEOUT_MS` | no | optional; default pool is 2 per instance on Vercel |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | **yes** | two **different** random strings, 32+ chars each (`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`) |
+| `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` | no | optional (defaults `15m` / `30d`) |
+| `COOKIE_SECURE` | no | `true` |
+| `COOKIE_SAMESITE` | no | `lax` |
+| `COOKIE_DOMAIN` | no | **leave unset** (the server refuses to start if it is `localhost`) |
+| `FRONTEND_URL` | no | final public URL, `https://…`, no trailing slash (reset-email links + origin allowlist). Falls back to `VERCEL_PROJECT_PRODUCTION_URL` if unset; set it explicitly once you add a custom domain |
+| `CORS_ALLOWED_ORIGINS` | no | optional extra origins (e.g. a second custom domain) |
+| `CLIENT_ORIGIN` | no | not needed in production (dev default is `http://localhost:5173`) |
+| `GMAIL_USER`, `EMAIL_FROM` | no | Gmail address / sender display |
+| `GMAIL_PASS` | **yes** | Gmail **App Password** |
+| `STORAGE_DRIVER` | no | `r2` |
+| `R2_ACCOUNT_ID` | no (treat as private) | Cloudflare account ID |
+| `R2_ACCESS_KEY_ID` | **yes** | R2 API token |
+| `R2_SECRET_ACCESS_KEY` | **yes** | R2 API token (shown once) |
+| `R2_PUBLIC_BUCKET_NAME`, `R2_PRIVATE_BUCKET_NAME` | no | the two bucket names (must differ) |
+| `R2_PUBLIC_BASE_URL` | no | public bucket URL, `https://…`, no trailing slash |
+| `UPSTASH_REDIS_REST_URL` | no | recommended — shared rate-limit counters (see §7) |
+| `UPSTASH_REDIS_REST_TOKEN` | **yes** | Upstash REST token |
+| `RATE_LIMIT_FAIL_CLOSED` | no | optional, default `false` |
+| `HEALTH_CHECK_TOKEN` | **yes** | optional; enables the deep R2 probe on `/api/health/ready` |
+| `PORT` | no | not needed (the Express service is entered through `src/app.js`, which never listens) |
 
-### Backend environment variables (Production)
+> The names are `R2_PUBLIC_BUCKET_NAME` / `R2_PRIVATE_BUCKET_NAME` (not `…_BUCKET`).
 
-| Variable | Value |
-|---|---|
-| `NODE_ENV` | `production` |
-| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | from your MySQL provider |
-| `DB_SSL` | `true` (and `DB_SSL_CA` = CA PEM with `\n` for newlines, if your provider gives one) |
-| `DB_CONNECTION_LIMIT` | optional; default is 2 per instance on Vercel — keep *instances × limit* below your DB's max connections |
-| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | two **different** random strings, 32+ chars (`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`) |
-| `FRONTEND_URL` | final frontend URL, `https://…`, no trailing slash (CORS **and** password-reset links) |
-| `CORS_ALLOWED_ORIGINS` | optional extra origins, comma-separated (e.g. a custom domain next to the vercel.app one) |
-| `COOKIE_SECURE` | `true` |
-| `COOKIE_SAMESITE` | `lax` if frontend and API share a parent domain (recommended); `none` for two `*.vercel.app` hosts |
-| `COOKIE_DOMAIN` | leave **unset** (host-only cookie), or `.yourdomain.com` to share between `app.` and `api.` |
-| `GMAIL_USER`, `GMAIL_PASS`, `EMAIL_FROM` | unchanged Gmail SMTP values (App Password) |
-| `STORAGE_DRIVER` + `R2_*` | §2 step 8 |
-| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | strongly recommended — see "Rate limiting" below |
-| `HEALTH_CHECK_TOKEN` | optional; enables the deep R2 probe on `/api/health/ready` |
+### C. Frontend / build-time (service `estatehub-react`)
+| Variable | Secret? | Notes |
+|---|---|---|
+| `VITE_API_URL` | no | **Do not set in production.** Production builds use the same-origin `/api`. It exists only for local development (`http://localhost:5000/api`). |
 
-The server **refuses to start** (clear message in the Vercel function logs) if production config is unsafe: weak/equal JWT
-secrets, `COOKIE_SECURE` not true, missing `FRONTEND_URL`, `SameSite=None` without `Secure`, incomplete R2 settings, or
-the same bucket used for public and private files.
+Scripts only (never set in Vercel): `SMOKE_BASE_URL`, `SMOKE_CONFIRM`, `SMOKE_ADMIN_EMAIL`, `SMOKE_ADMIN_PASSWORD`, `SMOKE_REPORT`.
 
-### Verify the backend
+The server **refuses to start** (clear message in the function logs) on unsafe production config: weak/equal JWT secrets, `COOKIE_SECURE` not true, a `localhost`
+cookie domain, no origin information, `SameSite=None` without `Secure`, incomplete R2 settings, or one bucket used for both public and private files.
+
+---
+
+## 5. Verify right after the first deploy
 
 ```bash
-curl https://YOUR-BACKEND.vercel.app/api/health          # api + database
-curl https://YOUR-BACKEND.vercel.app/api/health/ready     # + storage configured, rate-limit store (booleans/names only)
-curl -H "x-health-token: $HEALTH_CHECK_TOKEN" "https://YOUR-BACKEND.vercel.app/api/health/ready?deep=1"   # also probes both buckets
-curl https://YOUR-BACKEND.vercel.app/api/uploads/mode     # {"data":{"mode":"direct"}}
+BASE=https://<your-project>.vercel.app
+curl -i $BASE/api/health          # {"success":true,…"database":"ok"}
+curl -i $BASE/api/health/ready    # database ok, storage configured (booleans/names only), rateLimitStore
+curl -s $BASE/api/uploads/mode    # {"data":{"mode":"direct"}}
+curl -i $BASE/sign-in             # 200 + the React index.html (SPA fallback)
+curl -i -X POST -H "Origin: https://evil.example" $BASE/api/auth/refresh   # 403
+curl -I $BASE/assets/does-not-exist.js                                     # 404 (not index.html)
+# optional deep R2 probe: curl -H "x-health-token: $HEALTH_CHECK_TOKEN" "$BASE/api/health/ready?deep=1"
 ```
 
----
+## 6. Cloudflare R2 CORS — add the final Vercel origin
 
-## 4. Frontend → Vercel (Project A)
-
-| Setting | Value |
-|---|---|
-| Root Directory | `estatehub-react` |
-| Framework Preset | **Vite** |
-| Build Command | `npm run build` |
-| Output Directory | `dist` |
-| Environment variable | `VITE_API_URL` = `https://YOUR-BACKEND.vercel.app/api` (include `/api`, no trailing slash) |
-
-`vercel.json` rewrites every non-asset path to `index.html`, so deep links such as `/messages`, `/admin-dashboard`,
-`/property/…` and `/reset-password?token=…` work on refresh. `VITE_API_URL` is baked in at **build** time — redeploy after changing it.
-The Home hero is the local file `/assets/images/estatehub-hero.jpg` (served from `dist`).
-
-### Wire the two together
-
-1. Deploy the backend (§3) → note its URL.
-2. Deploy the frontend with `VITE_API_URL` set → note its URL.
-3. Back in the backend project set `FRONTEND_URL` (and `CORS_ALLOWED_ORIGINS` for extra origins) → **Redeploy** the backend.
-4. Add the final frontend origin(s) to both R2 CORS policies (§2 step 6).
-5. If you add a custom domain later, update `FRONTEND_URL`/`CORS_ALLOWED_ORIGINS`, `VITE_API_URL`, the R2 CORS origins and (if you
-   change the public media domain) `R2_PUBLIC_BASE_URL` — rows store the full public URL, so after changing it run
-   `UPDATE property_images SET image_url = REPLACE(image_url, 'https://old-host', 'https://new-host');` (same for `users.avatar_url`).
+After the first deploy you know the production origin (for example `https://estatehub-website.vercel.app`). Cloudflare Dashboard → **R2** → each bucket →
+**Settings → CORS Policy** → edit the JSON and put that origin in `AllowedOrigins` of **both** the public and the private bucket policies (JSON in §2 step 6).
+List only the origins that really serve the site: `http://localhost:5173`, the Vercel production origin, and your custom domain if you add one. Preview URLs
+(`*.vercel.app`) change on every deployment — test uploads on the production origin instead of adding wildcards. Do this before testing uploads; a missing origin shows up as a CORS error on the browser's PUT to R2.
 
 ---
 
-## 5. Rate limiting on Vercel
+## 7. Rate limiting on Vercel
 
-`express-rate-limit` keeps counters in memory. On Vercel many short-lived instances run in parallel, so without a shared
-store the login/refresh limits are **best-effort only** (each instance counts separately). The code supports a shared
-store with no extra npm package: create a free **Upstash Redis** database, copy its *REST URL* and *REST token* into
-`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`, redeploy. `/api/health/ready` then reports `rateLimitStore: "shared"`.
-If Redis is unreachable the limiter fails **open** (logged); set `RATE_LIMIT_FAIL_CLOSED=true` to reject instead.
+`express-rate-limit` keeps counters in memory per instance. On Vercel many short-lived instances run in parallel, so without a shared store the login/refresh limits are best-effort.
+Create a free **Upstash Redis** database, copy its *REST URL* and *REST token* into `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`, redeploy; `/api/health/ready` then reports `rateLimitStore: "shared"`.
+If Redis is unreachable the limiter fails open (logged); set `RATE_LIMIT_FAIL_CLOSED=true` to reject instead.
 
----
+## 8. Production verification checklist
 
-## 6. Test authentication, email and storage
-
-1. Register/login on the deployed frontend; reload the page (session refresh); log out; log in again.
-2. Forgot Password → the email arrives from Gmail and the link starts with your **deployed** frontend URL → reset → old sessions are gone.
-3. Agent → create a listing → upload photos (including one over 4.5 MB). Open the photo URL directly: it loads from `R2_PUBLIC_BASE_URL`.
-4. Agent → Verification → upload a PDF. Confirm in the R2 dashboard it is in the **private** bucket under `verification/<agentId>/`, and that
-   `https://<public-base>/verification/<agentId>/<file>` returns 404/403.
-5. Admin → open that document: it renders (a short-lived signed link is fetched). Another agent/buyer cannot open it.
-6. Delete a photo: the object disappears from the public bucket.
-
-**Production smoke script:** `npm run smoke` creates real users/listings. Only point it at a *staging* database
-(`SMOKE_BASE_URL=https://staging…/api SMOKE_CONFIRM=yes`, plus `SMOKE_ADMIN_EMAIL`/`SMOKE_ADMIN_PASSWORD` for the admin checks). Do not run it against a database with real customers.
+**Platform** — `GET /api/health` · `GET /api/health/ready` · homepage + hero image · direct refresh of `/sign-in`, `/browse-properties`, `/property-details/<id>`, `/messages`, `/admin-dashboard`, `/reset-password?token=…` · unknown `/api/xyz` returns the API's JSON 404
+**Auth** — sign up · sign in · reload the page (session persists via refresh) · logout (then reload: stays logged out) · forgot password → email link starts with your public URL → reset → old sessions rejected
+**Agent** — create listing · upload photos incl. one over 4.5 MB (public R2 bucket; open the URL directly) · edit/delete a photo (object disappears) · verification document upload (private bucket; `https://<public-base>/verification/…` must 404) · renewal document · inquiries · messages · appointments
+**Admin** — sign in · approve/reject a listing · open the private verification document (short-lived signed link) · users · renewals · audit log
+**Buyer** — browse + filters · property details + map · favorites · inquiry · messages · request appointment · agent confirms · buyer sees the update
+**Security** — buyer cannot create listings or call agent APIs · Agent B cannot edit/delete Agent A's listing, photos or amenities · another agent/buyer cannot open a private document · suspended account rejected · admin routes reject buyers/agents · refresh from a foreign `Origin` rejected
 
 ---
 
-## 7. Post-deployment checklist
+## 9. Local development
 
-**Public** — Home (hero image loads) · Browse + filters · Property Details + map · Find an Agent · Agent Profile · deep links reload correctly
-**Auth** — register · login · refresh (reload) · logout · forgot password (email, deployed link) · reset password
-**Agent** — create property · R2 photo upload (>4.5 MB too) · edit/delete photo · listing management · inquiries · messages · appointments · verification document upload · renewal document upload
-**Admin** — login · approve/reject listing · users (suspend/reactivate) · agent verification · private document view · renewals · audit log · notification settings
-**Buyer** — browse · save · inquiry · messages · appointment
-**Security** — buyer blocked from agent/listing operations · Agent B cannot edit/delete Agent A's listing, photos or amenities · private document URL/key not publicly reachable · a suspended account is rejected · admin routes reject buyers/agents · `curl -H "Origin: https://evil.example" -X POST …/api/auth/refresh` is refused (403) · browser requests from an unlisted origin get no CORS headers
-
----
-
-## 8. Local development (unchanged)
-
+Plain Vite + Express (two terminals; the frontend calls the API directly):
 ```bash
-cd estatehub-backend/server && npm install && npm test && npm run dev
-cd estatehub-react && npm install && npm run build && npm run dev
+cd estatehub-backend/server && npm install && npm test && npm run dev        # API on :5000
+cd estatehub-react && npm install && npm run build && npm run dev            # site on :5173, calls http://localhost:5000/api
 ```
-`.env` keeps `STORAGE_DRIVER=local` (or unset). Add the new optional variables from `.env.example` only when you need them.
+Keep `STORAGE_DRIVER=local` in your local backend `.env`, and `VITE_API_URL=http://localhost:5000/api` in the local frontend `.env`.
+
+Through Vercel Services locally (one origin, like production) — from the repository root:
+```bash
+vercel dev -L        # site and API both on http://localhost:3000 (/api/* -> Express, everything else -> Vite)
+```
+In this mode the browser must call the **same origin** (`/api`), so set `VITE_API_URL=/api` in `estatehub-react/.env` while testing with `vercel dev`
+(or start it with `$env:VITE_API_URL="/api"; vercel dev -L` in PowerShell) and put it back to `http://localhost:5000/api` for plain `npm run dev`.
+Otherwise the page loads but its API calls go to `localhost:5000`, which is cross-origin from `localhost:3000` and is not what production does.
 
 ---
 
-## 9. Moving existing local uploads to R2 (optional, manual, one time)
+## 10. Moving existing local uploads to R2 (optional, manual, one time)
 
 Only needed if the database you deploy contains rows pointing at `/uploads/...`.
 
@@ -269,11 +272,12 @@ Run it from the machine that still has `./uploads`.
 
 ---
 
-## 10. Known limits / what is still your responsibility
+## 11. Known limits / what is still unverified
 
-- **Not deployed or tested on Vercel/R2 by the author of this change** — everything above is prepared, not verified live.
-- Cross-site cookies on two `vercel.app` hosts may fail in Safari and other browsers that block third-party cookies → use a shared parent domain.
+- **Nothing here has been deployed or tested on Vercel or against live R2 by the author of this change.** The `services` schema, the service-scoped `rewrites`, the Node `entrypoint` and the "Services" project preset were checked against Vercel's current documentation, not by a deployment.
+- The Express service is entered through `src/app.js` (`"entrypoint"` in `vercel.json`), which exports the app and never calls `listen`. If Vercel rejects that path, remove the `entrypoint` line; Vercel then auto-detects the root `server.js` (the supported "port listener" pattern), which also works but runs its start-up database check.
+- Vercel environment variables are shared by both services' builds (only `VITE_*` values are embedded in the browser bundle).
 - Without Upstash, rate limiting is per instance (best-effort).
-- The lifecycle rule (§2 step 7) is what cleans abandoned `pending/` uploads; a presigned PUT cannot enforce a maximum size, so an oversized pending object is rejected (and deleted) at "complete" or by the lifecycle rule.
-- Vercel Hobby is for non-commercial use; check plan limits (function duration, bandwidth) for a real launch.
-- Rotate any credential that has ever been in a shared zip/chat (see the secret-scan note in the change report).
+- Presigned PUTs cannot enforce a maximum size; an oversized pending object is rejected and deleted at "complete" or by the 1-day `pending/` lifecycle rule.
+- Vercel Hobby is for non-commercial use; check plan limits (function duration, bandwidth, request size) before a real launch.
+- Rotate any credential that has ever been in a shared zip or chat.

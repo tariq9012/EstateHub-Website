@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "server": {
+      "root": "estatehub-backend/server",
+      "framework": "express",
+      "entrypoint": "src/app.js"
+    },
+    "estatehub-react": {
+      "root": "estatehub-react",
+      "framework": "vite",
+      "rewrites": [{ "source": "/((?!@|__|src/|node_modules/|assets/)[^.]*)", "destination": "/index.html" }]
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "server" } },
+    { "source": "/(.*)", "destination": { "service": "estatehub-react" } }
+  ]
+}
