@@ -8,8 +8,7 @@ const adminActionLogModel = require('../models/adminActionLog.model');
 const notificationModel = require('../models/notification.model');
 const asyncHandler = require('../utils/asyncHandler');
 const rules = require('../utils/agentPortalRules');
-const { deleteStoredFile } = require('../utils/uploadSafety');
-const { UPLOAD_ROOT } = require('../config/paths');
+const storage = require('../services/storage');
 const { success, failure } = require('../utils/apiResponse');
 
 const ALLOWED_DOCUMENT_TYPES = rules.DOCUMENT_TYPES;
@@ -77,7 +76,7 @@ const uploadRenewalDocument = asyncHandler(async (req, res) => {
     agentId: agent.agent_id,
     renewalId,
     documentType,
-    fileUrl: `/uploads/documents/${req.file.filename}`,
+    fileUrl: req.file.storedRef || `/uploads/documents/${req.file.filename}`,
   });
 
   await licenseRenewalModel.markDocumentsPending(renewalId);
@@ -107,7 +106,7 @@ const deleteRenewalDocument = asyncHandler(async (req, res) => {
   }
 
   await verificationDocumentModel.deleteDocument(documentId);
-  await deleteStoredFile(UPLOAD_ROOT, document.file_url);
+  await storage.deleteByReference(document.file_url);
   return success(res, { message: 'Document removed' }, 200);
 });
 

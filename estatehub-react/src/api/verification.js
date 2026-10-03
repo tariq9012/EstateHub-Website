@@ -2,6 +2,7 @@
 // Agent-facing verification calls. The agent is always resolved from the JWT on the server.
 
 import { api } from './apiClient';
+import { uploadDocument } from './uploads';
 
 /** GET /api/verification/me — status, license info, own documents, canSubmit/missing flags. */
 export function getMyVerification() {
@@ -10,7 +11,7 @@ export function getMyVerification() {
 
 /** POST /api/verification/documents — multipart: field "document" + "documentType". */
 export function uploadVerificationDocument(formData) {
-  return api.upload('/verification/documents', formData);
+  return uploadDocument('/verification/documents', formData);
 }
 
 /** DELETE /api/verification/documents/:id — own initial-verification document. */

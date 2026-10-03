@@ -2,6 +2,7 @@
 // Agent-facing license renewal calls. Ownership is enforced server-side from the JWT.
 
 import { api } from './apiClient';
+import { uploadDocument } from './uploads';
 
 /** POST /api/license-renewals — start a renewal (409 + details.renewalId if one is already open). */
 export function createRenewal() {
@@ -15,7 +16,7 @@ export function getMyRenewals() {
 
 /** POST /api/license-renewals/:id/documents — multipart: "document" + "documentType". */
 export function uploadRenewalDocument(renewalId, formData) {
-  return api.upload(`/license-renewals/${renewalId}/documents`, formData);
+  return uploadDocument(`/license-renewals/${renewalId}/documents`, formData);
 }
 
 /** DELETE /api/license-renewals/:id/documents/:documentId */

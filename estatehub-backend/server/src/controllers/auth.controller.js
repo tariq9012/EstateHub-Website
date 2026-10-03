@@ -25,11 +25,18 @@ function refreshCookieOptions(maxAgeMs) {
   return {
     httpOnly: true,
     secure: env.cookie.secure,
-    domain: env.cookie.domain,
-    sameSite: 'lax',
+    // Omitted entirely when unset (production default) so the cookie is host-only, the safest scope.
+    ...(env.cookie.domain ? { domain: env.cookie.domain } : {}),
+    sameSite: env.cookie.sameSite || 'lax',
     path: REFRESH_COOKIE_PATH,
     maxAge: maxAgeMs,
   };
+}
+
+/** Options that make clearCookie() match the cookie exactly as it was set (domain/path/sameSite/secure). */
+function clearCookieOptions() {
+  const { maxAge, ...rest } = refreshCookieOptions(0);
+  return rest;
 }
 
 /**
@@ -177,20 +184,20 @@ const refresh = asyncHandler(async (req, res) => {
   try {
     payload = verifyRefreshToken(token);
   } catch (err) {
-    res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+    res.clearCookie(REFRESH_COOKIE_NAME, clearCookieOptions());
     return failure(res, 'Invalid or expired refresh token', 401);
   }
 
   const tokenHash = hashToken(token);
   const storedToken = await refreshTokenModel.findValidByHash(tokenHash);
   if (!storedToken) {
-    res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+    res.clearCookie(REFRESH_COOKIE_NAME, clearCookieOptions());
     return failure(res, 'Refresh token has been revoked or is invalid', 401);
   }
 
   const user = await userModel.findById(payload.userId);
   if (!user || user.status !== 'active') {
-    res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+    res.clearCookie(REFRESH_COOKIE_NAME, clearCookieOptions());
     return failure(res, 'Account is no longer active', 401);
   }
 
@@ -209,7 +216,7 @@ const logout = asyncHandler(async (req, res) => {
   if (token) {
     await refreshTokenModel.revokeByHash(hashToken(token));
   }
-  res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+  res.clearCookie(REFRESH_COOKIE_NAME, clearCookieOptions());
   return success(res, { message: 'Logged out successfully' }, 200);
 });
 

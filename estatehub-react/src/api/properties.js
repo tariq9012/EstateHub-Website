@@ -1,6 +1,7 @@
 // src/api/properties.js
 
 import { api } from './apiClient';
+import { uploadImages } from './uploads';
 
 function toQueryString(params = {}) {
   const query = new URLSearchParams();
@@ -35,7 +36,7 @@ export function createProperty(payload) {
 
 /** POST /api/properties/:id/images — auth required, multipart form-data (field name "images") */
 export function addPropertyImages(id, formData) {
-  return api.upload(`/properties/${id}/images`, formData);
+  return uploadImages(`/properties/${id}/images`, formData);
 }
 
 /** PUT /api/properties/:id/amenities — auth required. Body: { amenityIds: number[] } */

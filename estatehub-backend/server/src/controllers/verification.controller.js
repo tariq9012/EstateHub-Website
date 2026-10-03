@@ -7,8 +7,7 @@ const adminActionLogModel = require('../models/adminActionLog.model');
 const notificationModel = require('../models/notification.model');
 const asyncHandler = require('../utils/asyncHandler');
 const rules = require('../utils/agentPortalRules');
-const { deleteStoredFile, resolveStoredFile } = require('../utils/uploadSafety');
-const { UPLOAD_ROOT } = require('../config/paths');
+const storage = require('../services/storage');
 const { success, failure } = require('../utils/apiResponse');
 
 const ALLOWED_DOCUMENT_TYPES = rules.DOCUMENT_TYPES;
@@ -45,7 +44,7 @@ const uploadMyDocument = asyncHandler(async (req, res) => {
     agentId: agent.agent_id,
     renewalId: null,
     documentType,
-    fileUrl: `/uploads/documents/${req.file.filename}`,
+    fileUrl: req.file.storedRef || `/uploads/documents/${req.file.filename}`,
   });
 
   return success(res, { documentId }, 201);
@@ -144,7 +143,7 @@ const deleteMyDocument = asyncHandler(async (req, res) => {
   }
 
   await verificationDocumentModel.deleteDocument(documentId);
-  await deleteStoredFile(UPLOAD_ROOT, document.file_url);
+  await storage.deleteByReference(document.file_url);
   return success(res, { message: 'Document removed' }, 200);
 });
 
@@ -193,10 +192,15 @@ const getDocumentFile = asyncHandler(async (req, res) => {
     }
   }
 
-  const absolutePath = resolveStoredFile(UPLOAD_ROOT, document.file_url);
-  if (!absolutePath) return failure(res, 'Document file is unavailable', 404);
-
-  return res.sendFile(absolutePath, (err) => {
+  // Authorization is done above. Legacy local files are sent directly; R2 documents are never public, so
+  // the caller gets a short-lived presigned URL (JSON) that the frontend then fetches. It is never stored.
+  const access = await storage.getPrivateFileAccess(document.file_url);
+  if (!access) return failure(res, 'Document file is unavailable', 404);
+  if (access.type === 'signed-url') {
+    res.set('Cache-Control', 'no-store');
+    return success(res, { url: access.url, expiresInSeconds: access.expiresInSeconds }, 200);
+  }
+  return res.sendFile(access.path, (err) => {
     if (err && !res.headersSent) failure(res, 'Document file is unavailable', 404);
   });
 });

@@ -8,6 +8,8 @@ const authorize = require('../middleware/authorize');
 const requirePermission = require('../middleware/requirePermission');
 const validateRequest = require('../middleware/validateRequest');
 const { propertyImageUpload } = require('../middleware/upload');
+const { finalizeDirectUploads } = require('../middleware/directUpload');
+const directUpload = require('../controllers/directUpload.controller');
 const {
   createPropertyValidator,
   updatePropertyValidator,
@@ -49,6 +51,23 @@ router.post(
   authenticate,
   propertyController.requirePropertyModifier,
   ...propertyImageUpload,
+  propertyController.addPropertyImages
+);
+// Browser-direct (Cloudflare R2) variant — STORAGE_DRIVER=r2 only. Same ownership gate first; "complete" then
+// validates the uploaded bytes server-side and hands off to the SAME controller (caps + review-status rules).
+router.post(
+  '/:id/images/direct/presign',
+  authenticate,
+  directUpload.requireDirectMode,
+  propertyController.requirePropertyModifier,
+  directUpload.presignPropertyImages
+);
+router.post(
+  '/:id/images/direct/complete',
+  authenticate,
+  directUpload.requireDirectMode,
+  propertyController.requirePropertyModifier,
+  finalizeDirectUploads('property-image', directUpload.resolvePropertyOwner),
   propertyController.addPropertyImages
 );
 router.delete(

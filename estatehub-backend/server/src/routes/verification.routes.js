@@ -7,6 +7,8 @@ const authorize = require('../middleware/authorize');
 const requirePermission = require('../middleware/requirePermission');
 const validateRequest = require('../middleware/validateRequest');
 const { documentUpload } = require('../middleware/upload');
+const { finalizeDirectUploads } = require('../middleware/directUpload');
+const directUpload = require('../controllers/directUpload.controller');
 const { rejectDocumentValidator } = require('../validators/verification.validator');
 
 const router = express.Router();
@@ -17,6 +19,22 @@ router.post(
   authenticate,
   authorize('agent'),
   ...documentUpload,
+  verificationController.uploadMyDocument
+);
+// Browser-direct (Cloudflare R2) variant — STORAGE_DRIVER=r2 only. The agent id always comes from the JWT.
+router.post(
+  '/documents/direct/presign',
+  authenticate,
+  authorize('agent'),
+  directUpload.requireDirectMode,
+  directUpload.presignVerificationDocument
+);
+router.post(
+  '/documents/direct/complete',
+  authenticate,
+  authorize('agent'),
+  directUpload.requireDirectMode,
+  finalizeDirectUploads('verification-document', directUpload.resolveAgentOwner),
   verificationController.uploadMyDocument
 );
 router.get('/me', authenticate, authorize('agent'), verificationController.getMyVerificationStatus);

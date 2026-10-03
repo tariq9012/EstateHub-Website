@@ -12,10 +12,15 @@ const pool = mysql.createPool({
   user: env.db.user,
   password: env.db.password,
   waitForConnections: true,
-  connectionLimit: 10,
-  maxIdle: 10,
+  // Serverless: every function instance owns a pool, so this defaults to 2 on Vercel (10 locally); see env.js.
+  connectionLimit: env.db.connectionLimit,
+  maxIdle: env.db.connectionLimit,
   idleTimeout: 60000,
   queueLimit: 0,
+  connectTimeout: env.db.connectTimeoutMs,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  ...(env.db.ssl ? { ssl: env.db.ssl } : {}),
   namedPlaceholders: true,
   dateStrings: true, // return DATE/DATETIME as plain strings, not JS Date objects
 });

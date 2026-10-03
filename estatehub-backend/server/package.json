@@ -2,15 +2,18 @@
   "name": "estatehub-server",
   "version": "1.0.0",
   "private": true,
-  "description": "EstateHub backend \u2014 Node.js + Express + MySQL",
+  "description": "EstateHub backend — Node.js + Express + MySQL",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
     "dev": "node --watch-path=./src --watch-path=./server.js --watch-path=./.env server.js",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "storage:migrate-r2": "node scripts/migrate-local-to-r2.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "bcrypt": "^5.1.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",

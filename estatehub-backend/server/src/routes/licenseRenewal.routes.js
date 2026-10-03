@@ -7,6 +7,8 @@ const authorize = require('../middleware/authorize');
 const requirePermission = require('../middleware/requirePermission');
 const validateRequest = require('../middleware/validateRequest');
 const { documentUpload } = require('../middleware/upload');
+const { finalizeDirectUploads } = require('../middleware/directUpload');
+const directUpload = require('../controllers/directUpload.controller');
 const { approveRenewalValidator } = require('../validators/licenseRenewal.validator');
 
 const router = express.Router();
@@ -19,6 +21,22 @@ router.post(
   authenticate,
   authorize('agent'),
   ...documentUpload,
+  licenseRenewalController.uploadRenewalDocument
+);
+// Browser-direct (Cloudflare R2) variant — STORAGE_DRIVER=r2 only.
+router.post(
+  '/:id/documents/direct/presign',
+  authenticate,
+  authorize('agent'),
+  directUpload.requireDirectMode,
+  directUpload.presignRenewalDocument
+);
+router.post(
+  '/:id/documents/direct/complete',
+  authenticate,
+  authorize('agent'),
+  directUpload.requireDirectMode,
+  finalizeDirectUploads('renewal-document', directUpload.resolveAgentOwner),
   licenseRenewalController.uploadRenewalDocument
 );
 router.delete(

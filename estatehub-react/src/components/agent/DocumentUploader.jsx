@@ -4,6 +4,7 @@
 // size and type, and decides who may add or remove documents.
 
 import { useRef, useState } from 'react';
+import { getDocumentFileUrl } from '../../api/verification';
 import { DOCUMENT_STATUS, DOCUMENT_TYPE_LABELS, formatBytes, formatTimestamp } from './agentUtils';
 import { Icon, StatusBadge, btnDanger, btnOutline, btnPrimary, inputClass, labelClass } from './agentUi';
 
@@ -63,6 +64,20 @@ export default function DocumentUploader({
     } finally {
       lockRef.current = false;
       setUploading(false);
+    }
+  };
+
+  // Documents are private: they open through the authenticated endpoint (never a public link). The tab is opened
+  // synchronously so the browser's popup blocker allows it, then pointed at the fetched file.
+  const viewFile = async (doc) => {
+    const tab = window.open('', '_blank');
+    try {
+      const { url } = await getDocumentFileUrl(doc.document_id);
+      if (tab) tab.location.href = url;
+      else window.location.assign(url);
+    } catch (err) {
+      if (tab) tab.close();
+      setError(err.message || 'Could not open that document.');
     }
   };
 
@@ -148,9 +163,9 @@ export default function DocumentUploader({
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge meta={DOCUMENT_STATUS[doc.status]} fallback={doc.status} />
                     {doc.file_url && (
-                      <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className={btnOutline}>
+                      <button type="button" className={btnOutline} onClick={() => viewFile(doc)}>
                         View file
-                      </a>
+                      </button>
                     )}
                     {removable && confirmId !== doc.document_id && (
                       <button type="button" className={btnDanger} disabled={deletingId !== null} onClick={() => setConfirmId(doc.document_id)}>

@@ -9,6 +9,7 @@ const healthRoutes = require('./health.routes');
 const router = express.Router();
 
 router.use(healthRoutes);
+router.get('/uploads/mode', require('../controllers/directUpload.controller').getUploadMode);
 router.use('/auth', require('./auth.routes'));
 router.use('/properties', require('./property.routes'));
 router.use('/lookups', require('./lookup.routes'));

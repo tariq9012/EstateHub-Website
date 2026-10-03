@@ -14,8 +14,7 @@ const propertyReviewModel = require('../models/propertyReview.model');
 
 const asyncHandler = require('../utils/asyncHandler');
 const propertyRules = require('../utils/propertyRules');
-const { deleteStoredFile } = require('../utils/uploadSafety');
-const { UPLOAD_ROOT } = require('../config/paths');
+const storage = require('../services/storage');
 const { success, failure } = require('../utils/apiResponse');
 
 /** True if the requesting user is allowed to modify this property. */
@@ -345,7 +344,8 @@ const addPropertyImages = asyncHandler(async (req, res) => {
   }
 
   const images = req.files.map((file) => ({
-    imageUrl: `/uploads/properties/${file.filename}`,
+    // Direct (R2) uploads carry the stored public URL; legacy multipart uploads keep the local path.
+    imageUrl: file.storedRef || `/uploads/properties/${file.filename}`,
     altText: null,
   }));
   await propertyImageModel.addImages(propertyId, images);
@@ -376,7 +376,7 @@ const deletePropertyImage = asyncHandler(async (req, res) => {
   const deleted = await propertyImageModel.deleteImage(imageId, propertyId);
   if (!deleted) return failure(res, 'Image not found', 404);
 
-  await deleteStoredFile(UPLOAD_ROOT, deleted.image_url);
+  await storage.deleteByReference(deleted.image_url);
   if (deleted.is_primary) await propertyImageModel.ensurePrimary(propertyId);
 
   const images = await propertyImageModel.listByProperty(propertyId);

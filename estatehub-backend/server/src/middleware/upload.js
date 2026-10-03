@@ -24,9 +24,31 @@ const { discardUploadsOnFailure, validateUploadedFiles } = require('./uploadGuar
 
 const { UPLOAD_ROOT } = require('../config/paths');
 
-['properties', 'documents', 'avatars'].forEach((sub) => {
-  fs.mkdirSync(path.join(UPLOAD_ROOT, sub), { recursive: true });
-});
+const storage = require('../services/storage');
+const { failure } = require('../utils/apiResponse');
+
+// Local disk is only used in development. On Vercel the filesystem is read-only, so creating folders
+// there would crash the function at import time — and in R2 mode nothing is ever written locally.
+if (storage.getUploadMode() === 'multipart') {
+  ['properties', 'documents', 'avatars'].forEach((sub) => {
+    try {
+      fs.mkdirSync(path.join(UPLOAD_ROOT, sub), { recursive: true });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[upload] could not create ${sub} upload folder: ${err.message}`);
+    }
+  });
+}
+
+/** In R2 mode the multipart routes are closed: files must go browser -> R2 via the /direct/* endpoints. */
+function rejectWhenDirect(req, res, next) {
+  if (storage.getUploadMode() === 'direct') {
+    return failure(res, 'This server uses direct uploads. Use the /direct/presign and /direct/complete endpoints.', 409, {
+      code: 'DIRECT_UPLOAD_REQUIRED',
+    });
+  }
+  return next();
+}
 
 function destinationFor(subfolder) {
   return function (req, file, cb) {
@@ -58,9 +80,9 @@ const uploadAvatar = multer({
 });
 
 /** field "images" (up to 20 files). */
-const propertyImageUpload = [discardUploadsOnFailure, uploadPropertyImages.array('images', 20), validateUploadedFiles(IMAGE_MIMES)];
+const propertyImageUpload = [rejectWhenDirect, discardUploadsOnFailure, uploadPropertyImages.array('images', 20), validateUploadedFiles(IMAGE_MIMES)];
 /** field "document" (single file). */
-const documentUpload = [discardUploadsOnFailure, uploadVerificationDocument.single('document'), validateUploadedFiles(DOCUMENT_MIMES)];
+const documentUpload = [rejectWhenDirect, discardUploadsOnFailure, uploadVerificationDocument.single('document'), validateUploadedFiles(DOCUMENT_MIMES)];
 
 module.exports = {
   UPLOAD_ROOT,

@@ -14,13 +14,23 @@ const routes = require('./routes');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
+const storage = require('./services/storage');
+
 const app = express();
+
+// Behind Vercel's proxy (or any reverse proxy) the client IP arrives in X-Forwarded-For; see config/env.js.
+if (env.trustProxy) app.set('trust proxy', env.trustProxy);
 
 // --- Core middleware ---
 app.use(helmet());
+// CORS: only origins on the allowlist (CLIENT_ORIGIN / FRONTEND_URL / CORS_ALLOWED_ORIGINS) are ever echoed back.
+// Requests with no Origin header (curl, server-to-server, same-origin) are not browser cross-origin calls and pass.
 app.use(
   cors({
-    origin: env.clientOrigin,
+    origin(origin, callback) {
+      if (!origin || env.allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(null, false); // no CORS headers -> the browser blocks the response
+    },
     credentials: true, // allow httpOnly refresh-token cookie
   })
 );
@@ -40,8 +50,12 @@ app.use(
 // Verification/license-renewal documents are sensitive (IDs, licenses, insurance) and are
 // deliberately NOT mounted here — they are only reachable through the authenticated,
 // ownership-checked route GET /api/verification/documents/:documentId/file.
-app.use('/uploads/properties', express.static(path.join(__dirname, '..', 'uploads', 'properties')));
-app.use('/uploads/avatars', express.static(path.join(__dirname, '..', 'uploads', 'avatars')));
+// Only mounted for the local development driver. With STORAGE_DRIVER=r2 public images are served by R2 itself
+// and nothing is read from (or written to) the local disk.
+if (storage.getUploadMode() === 'multipart') {
+  app.use('/uploads/properties', express.static(path.join(__dirname, '..', 'uploads', 'properties')));
+  app.use('/uploads/avatars', express.static(path.join(__dirname, '..', 'uploads', 'avatars')));
+}
 
 // --- Routes ---
 // All feature routers are mounted inside src/routes/index.js and added

@@ -111,8 +111,19 @@ async function getBlobUrl(path) {
     error.status = res.status;
     throw error;
   }
+  // R2 mode: private documents are never streamed through the API (and are never public). The API answers with
+  // JSON { data: { url } } — a short-lived presigned link — which we fetch WITHOUT credentials or our auth header.
+  const type = res.headers.get('Content-Type') || '';
+  if (type.includes('application/json')) {
+    const signed = (await res.json())?.data;
+    if (!signed?.url) throw new Error('The document link was not returned.');
+    const fileRes = await fetch(signed.url);
+    if (!fileRes.ok) throw new Error(`Could not load the document (status ${fileRes.status}).`);
+    const fileBlob = await fileRes.blob();
+    return { url: URL.createObjectURL(fileBlob), contentType: fileRes.headers.get('Content-Type') || fileBlob.type };
+  }
   const blob = await res.blob();
-  return { url: URL.createObjectURL(blob), contentType: res.headers.get('Content-Type') || blob.type };
+  return { url: URL.createObjectURL(blob), contentType: type || blob.type };
 }
 
 export const api = {
