@@ -2,6 +2,8 @@
 
 const { pool } = require('../config/db');
 
+const UNIQUE_VIOLATION = '23505'; // PostgreSQL SQLSTATE unique_violation
+
 async function create({ agentId, userId, rating, comment }) {
   try {
     await pool.query(
@@ -11,13 +13,13 @@ async function create({ agentId, userId, rating, comment }) {
     );
     return true;
   } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') return false; // one review per user per agent
+    if (err.code === UNIQUE_VIOLATION) return false; // one review per user per agent
     throw err;
   }
 }
 
 async function listForAgent(agentId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT ar.review_id, ar.rating, ar.comment, ar.created_at, u.first_name, u.last_name
      FROM agent_reviews ar
      JOIN users u ON u.user_id = ar.user_id
@@ -35,8 +37,8 @@ async function listForAgent(agentId) {
  * listing/search pages; agent_reviews remains the source of truth.
  */
 async function recalculateAgentRating(agentId) {
-  const [rows] = await pool.query(
-    'SELECT COUNT(*) AS cnt, COALESCE(AVG(rating), 0) AS avgRating FROM agent_reviews WHERE agent_id = :agentId',
+  const { rows } = await pool.query(
+    'SELECT COUNT(*) AS cnt, COALESCE(AVG(rating), 0) AS "avgRating" FROM agent_reviews WHERE agent_id = :agentId',
     { agentId }
   );
   const { cnt, avgRating } = rows[0];

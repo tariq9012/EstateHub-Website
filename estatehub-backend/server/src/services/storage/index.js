@@ -5,13 +5,13 @@
 //   STORAGE_DRIVER=local (default)  development: multer disk storage, '/uploads/...' references, unchanged.
 //   STORAGE_DRIVER=r2               production/Vercel: Cloudflare R2, browser-direct uploads (see r2Driver.js).
 //
-// References stored in MySQL (existing VARCHAR(500) columns, no schema change):
+// References stored in PostgreSQL (existing VARCHAR(500) columns, no schema change):
 //   '/uploads/<sub>/<file>'                  legacy/local file (still deleted/served correctly after switching to R2)
 //   'https://<public host>/properties/..'    PUBLIC R2 object (listing photos, avatars)
 //   'verification/<agentId>/<uuid>.pdf'      PRIVATE R2 object key (documents) — never a URL, never public
 //
 // Configuration is read from process.env lazily (not from config/env.js) so this module stays loadable
-// in unit tests without dotenv/MySQL; config/env.js validates the same variables at server start-up.
+// in unit tests without dotenv/database; config/env.js validates the same variables at server start-up.
 
 const { createLocalDriver } = require('./localDriver');
 const { createR2DriverFromConfig } = require('./r2Driver');

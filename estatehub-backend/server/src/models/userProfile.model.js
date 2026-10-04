@@ -5,7 +5,7 @@ const { pool } = require('../config/db');
 const ALLOWED_FIELDS = ['bio', 'address_line', 'city', 'state', 'country', 'postal_code', 'date_of_birth'];
 
 async function findByUserId(userId) {
-  const [rows] = await pool.query('SELECT * FROM user_profiles WHERE user_id = :userId LIMIT 1', { userId });
+  const { rows } = await pool.query('SELECT * FROM user_profiles WHERE user_id = :userId LIMIT 1', { userId });
   return rows[0] || null;
 }
 

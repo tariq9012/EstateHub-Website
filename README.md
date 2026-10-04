@@ -1,7 +1,7 @@
 # EstateHub
 
 EstateHub is a full-stack real-estate marketplace with three roles — **Buyer**, **Agent**,
-and **Admin** — built as a React single-page frontend backed by an Express + MySQL API.
+and **Admin** — built as a React single-page frontend backed by an Express + PostgreSQL (Neon) API.
 
 This README describes the project as it currently stands. It replaces the old
 `estatehub-react/README.md`, which only covered the frontend and predates the backend.
@@ -24,7 +24,7 @@ middleware) — the frontend hiding a button is a UX convenience, not the securi
 |---|---|
 | Frontend | React 18 (Vite), React Router 6, Tailwind CSS |
 | Backend | Node.js, Express |
-| Database | MySQL (via `mysql2`) |
+| Database | PostgreSQL — Neon in production (via `pg`) |
 | Auth | JWT access token + refresh token (HTTP-only cookie) |
 | Email | Gmail SMTP (via `nodemailer`), console fallback in development |
 | Uploads | `multer`, local disk (`server/uploads/`) — see storage limitation below |
@@ -63,41 +63,34 @@ EstateHub website/
 ## Prerequisites
 
 - Node.js 18+
-- A running MySQL server (local or remote)
+- A PostgreSQL database: a free [Neon](https://neon.tech) project, or a local PostgreSQL 14+
 - (Optional, for real email delivery) a Gmail account with an **App Password**
 
 ## 1. Database setup
 
-```bash
-mysql -u root -p -e "CREATE DATABASE estatehub;"
-mysql -u root -p estatehub < estatehub-backend/database/schema.sql
-```
-
-Then apply migrations, in order, on top of the base schema:
+EstateHub runs on PostgreSQL (Neon in production). The schema lives in
+`estatehub-backend/database/postgres/migrations/` and is applied by a script — the API never creates tables itself.
 
 ```bash
-mysql -u root -p estatehub < estatehub-backend/database/migrations/001_add_password_reset_tokens.sql
+cd estatehub-backend/server
+cp .env.example .env          # then set DATABASE_URL (Neon connection string, or postgresql://postgres:...@localhost:5432/estatehub)
+npm install
+npm run db:migrate            # create all 29 tables, indexes, constraints, triggers
+npm run db:seed               # property types, amenities, locations, notification settings (safe to re-run)
+npm run db:verify             # read-only structural check + row counts
 ```
 
-Then load reference/lookup seed data, in order:
-
-```bash
-for f in estatehub-backend/database/seeds/*.sql; do
-  mysql -u root -p estatehub < "$f"
-done
-```
-
-If you already have an existing EstateHub database, only run migration/seed files you
-haven't applied yet — none of them are safe to run twice without checking first (some seeds
-insert lookup rows that would duplicate). Never re-run `schema.sql` against a database that
-already has data.
+Coming from the previous MySQL version? The original MySQL files (`database/schema.sql`, `migrations/`, `seeds/`) are kept for
+reference and for the one-time copy of existing data: `npm run db:import-mysql` (rehearsal by default; add `-- --apply` to commit).
+See `DEPLOYMENT.md` §1 for the full, step-by-step Neon procedure. Never run an import into a database that already holds data you care about —
+the importer refuses non-empty targets.
 
 ## 2. Backend setup
 
 ```bash
 cd estatehub-backend/server
 cp .env.example .env
-# edit .env: at minimum set DB_HOST/DB_NAME/DB_USER/DB_PASSWORD and both JWT secrets
+# edit .env: at minimum set DATABASE_URL and both JWT secrets
 npm install
 npm run dev        # or: npm start
 ```
@@ -165,14 +158,15 @@ accepts both and is also what most hosting platforms/containers require. If you 
 `localhost` and it worked before, nothing changes for you; if anything hit 127.0.0.1 directly and
 failed, it should work now.
 
-## Live smoke / security test (real backend + real MySQL)
+## Live smoke / security test (real backend + real database)
 
 `npm test` uses in-memory fakes. `estatehub-backend/server/scripts/smoke.js` is a separate script
-that exercises a **running** backend and its **real** MySQL database: registration/login, JWT tampering,
+that exercises a **running** backend and its **real** PostgreSQL database (ported from MySQL during the Neon migration —
+**not yet run against PostgreSQL**; the results quoted below are from the earlier MySQL era): registration/login, JWT tampering,
 refresh-token rotation and reuse, logout, role authorization (buyer/agent/admin), buyer-cannot-create-property,
 Agent B vs Agent A ownership (edit, amenities, delete, image upload), the cross-role listing flow,
 appointments (UTC storage), password reset (hashed, expiring, single-use), suspension, private
-verification documents, upload/path-traversal defenses, MySQL timezone behavior (UTC, +05:00, -05:00), and
+verification documents, upload/path-traversal defenses, PostgreSQL timezone behavior (UTC, Asia/Karachi, America/New_York sessions), and
 a scan for backend secrets in the frontend.
 
 ```bash
@@ -192,7 +186,7 @@ SMOKE_CONFIRM=yes SMOKE_ADMIN_EMAIL=admin@example.com SMOKE_ADMIN_PASSWORD='...'
 - For server-zone independence, run it twice: backend started with `TZ=UTC` and again with `TZ=Asia/Karachi`.
 - `SMOKE_REPORT=report.json` writes a machine-readable report. Cleanup SQL is printed at the end.
 
-**Run against a real backend and real MySQL 8.0.45** (2026-09): first run found 2 real bugs (see
+**Historical result — run against a real backend and real MySQL 8.0.45 (2026-09), before the PostgreSQL migration:** first run found 2 real bugs (see
 "Timezone policy" above — the password-reset-token SQL had the same session-timezone flaw already
 fixed once in refresh tokens) and, along the way, a real server-startup bug (`server.js` had no
 explicit bind host, which left the server reachable at `http://localhost:PORT` but refusing
@@ -252,6 +246,13 @@ Static code review only — nothing below was checked in an actual browser or sc
   browser, focus-trap testing inside the admin/agent modals, and color-contrast checking.
 
 ## Timezone policy
+
+> **Superseded by the PostgreSQL migration.** The notes below describe the MySQL implementation (session pin, `FROM_UNIXTIME`,
+> `dateStrings`) and are kept as history. On PostgreSQL: token/audit/created_at columns are `TIMESTAMPTZ` (absolute instants, so no
+> session-zone pin is needed); `appointments.scheduled_at` is `TIMESTAMP` holding UTC digits written/read as explicit UTC strings;
+> `NOW() + interval` / `to_timestamp()` replace the MySQL idioms; and `src/config/dbHelpers.js` makes `pg` return DATE/TIMESTAMP
+> values as the same `'YYYY-MM-DD'` / `'YYYY-MM-DD HH:MM:SS'` (UTC) strings the API has always returned. `database/verify_timezone.sql`
+> applies to MySQL only.
 
 - Every MySQL connection is pinned to session `time_zone = '+00:00'` (UTC) in `src/config/db.js`,
   so `NOW()`, `FROM_UNIXTIME()` and `TIMESTAMP` columns are UTC regardless of the server's OS zone.

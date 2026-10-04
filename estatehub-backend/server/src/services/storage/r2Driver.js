@@ -53,7 +53,7 @@ function createR2Driver({ client, signUrl, commands, config }) {
     return bucketForVisibility(visibilityForPrefix(parsed.prefix));
   }
 
-  /** What gets stored in MySQL for a final key: a public URL for public kinds, the bare key for private kinds. */
+  /** What gets stored in the database for a final key: a public URL for public kinds, the bare key for private kinds. */
   function referenceForKey(key) {
     const parsed = parseFinalKey(key);
     if (!parsed) throw new Error('Invalid storage key');

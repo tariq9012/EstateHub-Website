@@ -3,14 +3,14 @@
 const { pool } = require('../config/db');
 
 async function getOrCreateDefaults(userId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT * FROM user_notification_preferences WHERE user_id = :userId LIMIT 1',
     { userId }
   );
   if (rows[0]) return rows[0];
 
   await pool.query('INSERT INTO user_notification_preferences (user_id) VALUES (:userId)', { userId });
-  const [created] = await pool.query(
+  const { rows: created } = await pool.query(
     'SELECT * FROM user_notification_preferences WHERE user_id = :userId LIMIT 1',
     { userId }
   );
@@ -34,7 +34,7 @@ async function update(userId, fields) {
     );
   }
 
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT * FROM user_notification_preferences WHERE user_id = :userId LIMIT 1',
     { userId }
   );

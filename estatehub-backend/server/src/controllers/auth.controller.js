@@ -95,45 +95,44 @@ const register = asyncHandler(async (req, res) => {
   }
 
   const passwordHash = await hashPassword(password);
-  const connection = await pool.getConnection();
 
+  let userId;
   try {
-    await connection.beginTransaction();
-
-    const userId = await userModel.createUser(connection, {
-      email,
-      passwordHash,
-      role,
-      firstName,
-      lastName,
-      phone,
-    });
-
-    if (role === 'agent') {
-      await agentModel.createAgent(connection, {
-        userId,
-        licenseNumber,
-        agencyName,
-        specialty,
-        yearsExperience,
+    // Atomic: the user row and (for agents) the agent row are created together or not at all. pool.withTransaction
+    // runs both inserts on ONE client and always releases it.
+    userId = await pool.withTransaction(async (tx) => {
+      const newUserId = await userModel.createUser(tx, {
+        email,
+        passwordHash,
+        role,
+        firstName,
+        lastName,
+        phone,
       });
-    }
 
-    await connection.commit();
-
-    const user = await userModel.findById(userId);
-    const accessToken = await issueTokens(res, user);
-
-    return success(res, { user: userModel.toSafeUser(user), accessToken }, 201);
+      if (role === 'agent') {
+        await agentModel.createAgent(tx, {
+          userId: newUserId,
+          licenseNumber,
+          agencyName,
+          specialty,
+          yearsExperience,
+        });
+      }
+      return newUserId;
+    });
   } catch (err) {
-    await connection.rollback();
-    if (err.code === 'ER_DUP_ENTRY') {
+    // 23505 = PostgreSQL unique_violation (a concurrent signup raced past the findByEmail / license checks above).
+    if (err.code === '23505') {
       return failure(res, 'Email or license number is already in use', 409);
     }
     throw err;
-  } finally {
-    connection.release();
   }
+
+  const user = await userModel.findById(userId);
+  const accessToken = await issueTokens(res, user);
+
+  return success(res, { user: userModel.toSafeUser(user), accessToken }, 201);
 });
 
 /**

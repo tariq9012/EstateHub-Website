@@ -32,7 +32,7 @@ async function createProperty(
     status,
   }
 ) {
-  const [result] = await executor.query(
+  const result = await executor.query(
     `INSERT INTO properties
       (listed_by_user_id, agent_id, type_id, location_id, title, description,
        address_line, postal_code, latitude, longitude, price, listing_type,
@@ -40,7 +40,7 @@ async function createProperty(
      VALUES
       (:listedByUserId, :agentId, :typeId, :locationId, :title, :description,
        :addressLine, :postalCode, :latitude, :longitude, :price, :listingType,
-       :bedrooms, :bathrooms, :areaSqft, :lotSizeSqft, :yearBuilt, :status)`,
+       :bedrooms, :bathrooms, :areaSqft, :lotSizeSqft, :yearBuilt, :status) RETURNING property_id`,
     {
       listedByUserId,
       agentId: agentId || null,
@@ -62,12 +62,12 @@ async function createProperty(
       status: status === 'draft' ? 'draft' : 'pending_review',
     }
   );
-  return result.insertId;
+  return result.rows[0].property_id;
 }
 
 /** Full detail view: property + type/location + images + amenities. */
 async function findById(propertyId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT p.*, pt.name AS type_name,
             l.neighborhood, l.city, l.state, l.country,
             u.first_name AS lister_first_name, u.last_name AS lister_last_name
@@ -82,13 +82,13 @@ async function findById(propertyId) {
   const property = rows[0];
   if (!property) return null;
 
-  const [images] = await pool.query(
+  const { rows: images } = await pool.query(
     `SELECT image_id, image_url, alt_text, is_primary, display_order
      FROM property_images WHERE property_id = :propertyId ORDER BY display_order ASC`,
     { propertyId }
   );
 
-  const [amenities] = await pool.query(
+  const { rows: amenities } = await pool.query(
     `SELECT a.amenity_id, a.name, a.icon
      FROM property_amenities pa JOIN amenities a ON a.amenity_id = pa.amenity_id
      WHERE pa.property_id = :propertyId`,
@@ -100,7 +100,7 @@ async function findById(propertyId) {
 
 /** Minimal row — used for ownership checks without the full join cost. */
 async function findOwnerInfo(propertyId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT property_id, listed_by_user_id, agent_id, status FROM properties WHERE property_id = :propertyId LIMIT 1',
     { propertyId }
   );
@@ -108,7 +108,7 @@ async function findOwnerInfo(propertyId) {
 }
 
 async function findByOwner(userId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT p.*, pt.name AS type_name, l.city, l.country,
             (SELECT image_url FROM property_images pi WHERE pi.property_id = p.property_id AND pi.is_primary = TRUE LIMIT 1) AS primary_image_url
      FROM properties p
@@ -124,7 +124,7 @@ async function findByOwner(userId) {
 /** Every listing assigned to an agent — distinct from findByOwner, which is scoped to who submitted the listing. */
 async function findByAgent(agentId) {
   // Additive extras for the agent's "My Listings" page: location detail + activity counts.
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT p.*, pt.name AS type_name, l.city, l.country, l.neighborhood,
             (SELECT image_url FROM property_images pi WHERE pi.property_id = p.property_id AND pi.is_primary = TRUE LIMIT 1) AS primary_image_url,
             (SELECT COUNT(*) FROM property_images pi2 WHERE pi2.property_id = p.property_id) AS image_count,
@@ -214,7 +214,7 @@ async function search({
     params.maxYearBuilt = maxYearBuilt;
   }
   if (city) {
-    conditions.push('l.city LIKE :city');
+    conditions.push('l.city ILIKE :city');
     params.city = `%${city}%`;
   }
   if (agentId) {
@@ -222,7 +222,7 @@ async function search({
     params.agentId = agentId;
   }
   if (keyword) {
-    conditions.push('(p.title LIKE :keyword OR p.description LIKE :keyword)');
+    conditions.push('(p.title ILIKE :keyword OR p.description ILIKE :keyword)');
     params.keyword = `%${keyword}%`;
   }
   if (amenityIds && amenityIds.length > 0) {
@@ -250,7 +250,7 @@ async function search({
   const safePage = Math.max(parseInt(page, 10) || 1, 1);
   const offset = (safePage - 1) * safeLimit;
 
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT p.property_id, p.title, p.price, p.listing_type, p.bedrooms, p.bathrooms,
             p.area_sqft, p.status, p.is_featured, p.created_at,
             pt.name AS type_name, l.neighborhood, l.city, l.state, l.country,
@@ -264,7 +264,7 @@ async function search({
     params
   );
 
-  const [countRows] = await pool.query(
+  const { rows: countRows } = await pool.query(
     `SELECT COUNT(*) AS total
      FROM properties p
      JOIN locations l ON l.location_id = p.location_id
@@ -327,13 +327,13 @@ async function updateProperty(propertyId, fields) {
  * contract, or archived. Returns true if the transition was applied.
  */
 async function approveProperty(propertyId, adminId) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     `UPDATE properties
      SET status = 'active', approved_by = :adminId, approved_at = NOW(), rejection_reason = NULL
      WHERE property_id = :propertyId AND status = 'pending_review'`,
     { propertyId, adminId }
   );
-  return result.affectedRows === 1;
+  return result.rowCount === 1;
 }
 
 /**
@@ -341,13 +341,13 @@ async function approveProperty(propertyId, adminId) {
  * transition was applied.
  */
 async function rejectProperty(propertyId, adminId, reason) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     `UPDATE properties
      SET status = 'rejected', approved_by = :adminId, approved_at = NOW(), rejection_reason = :reason
      WHERE property_id = :propertyId AND status = 'pending_review'`,
     { propertyId, adminId, reason }
   );
-  return result.affectedRows === 1;
+  return result.rowCount === 1;
 }
 
 /**
@@ -355,12 +355,12 @@ async function rejectProperty(propertyId, adminId, reason) {
  * owner's edit can never overwrite an admin decision made in the meantime. Returns true if changed.
  */
 async function transitionStatus(propertyId, fromStatus, toStatus, { clearRejection = false } = {}) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     `UPDATE properties SET status = :toStatus${clearRejection ? ', rejection_reason = NULL' : ''}
      WHERE property_id = :propertyId AND status = :fromStatus`,
     { propertyId, fromStatus, toStatus }
   );
-  return result.affectedRows === 1;
+  return result.rowCount === 1;
 }
 
 async function archiveProperty(propertyId) {

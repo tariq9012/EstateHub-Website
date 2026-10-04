@@ -183,13 +183,11 @@ const createProperty = asyncHandler(async (req, res) => {
     agentId = agent ? agent.agent_id : null;
   }
 
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
+  // Location lookup/creation and the property insert commit together or not at all (one client, always released).
+  const propertyId = await pool.withTransaction(async (tx) => {
+    const locationId = await locationModel.findOrCreate(tx, { neighborhood, city, state, country });
 
-    const locationId = await locationModel.findOrCreate(connection, { neighborhood, city, state, country });
-
-    const propertyId = await propertyModel.createProperty(connection, {
+    return propertyModel.createProperty(tx, {
       listedByUserId: req.user.userId,
       agentId,
       typeId,
@@ -209,17 +207,10 @@ const createProperty = asyncHandler(async (req, res) => {
       yearBuilt,
       status: saveAsDraft ? 'draft' : 'pending_review',
     });
+  });
 
-    await connection.commit();
-
-    const property = await propertyModel.findById(propertyId);
-    return success(res, { property }, 201);
-  } catch (err) {
-    await connection.rollback();
-    throw err;
-  } finally {
-    connection.release();
-  }
+  const property = await propertyModel.findById(propertyId);
+  return success(res, { property }, 201);
 });
 
 /**

@@ -1,4 +1,4 @@
-# EstateHub — deployment guide (Vercel Services + Cloudflare R2 + MySQL)
+# EstateHub — deployment guide (Vercel Services + Cloudflare R2 + Neon PostgreSQL)
 
 **One Vercel project, one public origin**, built from this repository with Vercel Services:
 
@@ -10,7 +10,7 @@ https://<your-project>.vercel.app/api/*   → Express backend       (service "se
 | Part | Where |
 |---|---|
 | Frontend (React/Vite) + backend (Express) | ONE Vercel project, two services, routed by the root `vercel.json` |
-| Database | hosted MySQL 8 (any provider) |
+| Database | Neon PostgreSQL (serverless Postgres; `DATABASE_URL`) |
 | Files | Cloudflare R2: one **public** bucket, one **private** bucket |
 | Email | Gmail SMTP (unchanged) |
 
@@ -48,15 +48,63 @@ and 10 MB documents, so files never pass through the API: the API authorizes and
 bytes (size, magic bytes, declared type) before saving anything. Details: `src/services/storage/r2Driver.js`.
 
 **Two buckets.** Cloudflare can only make a whole bucket public, so photos live in a public bucket and verification/renewal documents in a private bucket
-that is never public. MySQL stores a public URL for photos and a bare key for private documents (no schema change).
+that is never public. The database stores a public URL for photos and a bare key for private documents (no schema change).
 
 ---
 
-## 1. Hosted MySQL
+## 1. Neon PostgreSQL
 
-1. Create a MySQL 8 database (Aiven, TiDB Cloud, AWS RDS, DigitalOcean, Railway, …). Note host, port, database, user, password, whether TLS is required and any CA certificate.
-2. Apply the **existing** `estatehub-backend/database/schema.sql` (plus any additive migrations you applied locally) once to this **new, empty** database. Never run it against a database that holds data you care about.
-3. No schema change is required for R2 or Services. The app pins every connection to UTC.
+The backend talks to PostgreSQL through the `pg` driver with one small connection pool per function instance (2 connections on Vercel).
+The old MySQL database is **not touched** by any step below — keep it until §1.8 says it is safe to retire.
+
+**1.1 Create the Neon project.** [neon.tech](https://neon.tech) → *Create project* → pick the Postgres version and a region close to your Vercel functions
+(Vercel → Settings → Functions → Function Region; keep them in the same region to cut latency). Name the database e.g. `estatehub`.
+
+**1.2 Copy the connection string.** Neon Dashboard → *Connect*. Use the **pooled** string (host contains `-pooler`) for Vercel — it survives many short-lived
+function instances. Neon shows `?sslmode=require` at the end; change it to `?sslmode=verify-full` (full certificate + hostname verification, stated explicitly
+so a future `pg` major version cannot silently weaken it; Neon's certificates are publicly trusted, so no CA file is needed). It looks like
+`postgresql://USER:PASSWORD@ep-xxxx-pooler.REGION.aws.neon.tech/DBNAME?sslmode=verify-full`.
+For `npm run db:migrate` you may use the same pooled string, or Neon's *direct* (non-pooler) string if you prefer — both work.
+Type it only into your private `.env` and Vercel's settings — never into chat, git, tests or docs.
+
+**1.3 Add `DATABASE_URL` to Vercel.** Vercel → Project → Settings → Environment Variables → `DATABASE_URL` = the string from 1.2, scope **Production**
+(Preview: a separate Neon *branch* string, never the production one). Mark it *Sensitive*. Delete the old `DB_*` variables (§4).
+
+**1.4 Create the schema (once, from your computer).**
+```bash
+cd estatehub-backend/server
+npm install                      # installs `pg` (see "Dependencies" below)
+# put DATABASE_URL=... in estatehub-backend/server/.env  (this file is git-ignored)
+npm run db:migrate               # applies database/postgres/migrations/*.sql in one transaction per file
+npm run db:seed                  # property types, amenities, locations, notification settings (idempotent)
+npm run db:verify                # read-only: 29 tables, 47 foreign keys, 14 triggers, indexes, sequences, row counts
+```
+`db:migrate -- --status` lists applied/pending migrations. The API never creates or alters tables by itself.
+
+**1.5 Copy your existing MySQL data (one time).** Skip this only if you want an empty production database.
+```bash
+# .env (temporarily): MYSQL_SOURCE_URL=mysql://USER:PASSWORD@HOST:3306/DBNAME    (read-only; only SELECTs are sent)
+#                     DATABASE_URL=<Neon>
+npm run db:import-mysql            # REHEARSAL: copies + verifies inside a transaction, then ROLLS BACK
+npm run db:import-mysql -- --apply # real run; commits only if every check passes
+```
+It preserves every id, password hash, token hash, R2 URL/key and timestamp, refuses to run into a non-empty database, advances the id sequences, and
+compares per-table row counts, primary-key sums and an MD5 of all password hashes against MySQL before committing. R2 files are not re-uploaded: the same URLs/keys keep working.
+Run it from a machine that can reach both databases. If your MySQL is only on your laptop, run it there.
+
+**1.6 Verify.** `npm run db:verify` again (row counts now match the importer's report), then `npm test`.
+For a live end-to-end check against the real database, start the API locally with `DATABASE_URL` set and run `npm run smoke` (it creates and cleans up its own `smoke.*` rows — read the header of `scripts/smoke.js` first).
+
+**1.7 Deploy.** Push, let Vercel build, then check `GET /api/health` → `"database":"ok"` and `GET /api/health/ready` (§5).
+
+**1.8 Only after production is verified** (§8 checklist passed, a Neon backup/branch exists, and you have kept a final MySQL dump) may you retire the old MySQL
+database — manually, whenever you choose. Nothing in this repository deletes it.
+
+**Notes**
+- Neon scales to zero: the first request after idle can take a second or two while the compute wakes (the pool's 10 s connect timeout covers this).
+- Keep `(instances × DATABASE_POOL_MAX)` below your Neon connection limit; the pooled host makes this a non-issue for normal traffic.
+- TLS is always verified for remote hosts; the app never disables certificate checking. `DATABASE_SSL=false` exists only for a local non-TLS Postgres and is refused in production.
+- Case-insensitive behaviour of MySQL (email, license numbers, search) is preserved explicitly: `LOWER()` lookups + unique indexes on `LOWER(email)` / `LOWER(license_number)`, `ILIKE` for searches.
 
 ## 2. Cloudflare R2
 
@@ -158,12 +206,9 @@ Add them for **Production**. For **Preview**, either leave them unset or point t
 |---|---|---|
 | `NODE_ENV` | no | `production` |
 | `TRUST_PROXY` | no | `1` (so rate limiting sees the real client IP behind Vercel) |
-| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` | no | from your MySQL provider |
-| `DB_PASSWORD` | **yes** | from your MySQL provider |
-| `DB_SSL` | no | `true` for hosted MySQL |
-| `DB_SSL_CA` | no (certificate) | CA PEM, newlines written as `\n` — only if your provider supplies one |
-| `DB_SSL_REJECT_UNAUTHORIZED` | no | leave unset (defaults to true) |
-| `DB_CONNECTION_LIMIT`, `DB_CONNECT_TIMEOUT_MS` | no | optional; default pool is 2 per instance on Vercel |
+| `DATABASE_URL` | **yes** | Neon connection string (§1.2) — contains the password; the server refuses to start if it is missing, not `postgresql://`, or points at localhost in production |
+| `DATABASE_POOL_MAX`, `DATABASE_CONNECT_TIMEOUT_MS` | no | optional; default pool is 2 per instance on Vercel (10 locally), connect timeout 10 s |
+| ~~`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`, `DB_SSL_CA`, `DB_SSL_REJECT_UNAUTHORIZED`, `DB_CONNECTION_LIMIT`, `DB_CONNECT_TIMEOUT_MS`~~ | — | **obsolete** (MySQL): delete them from Vercel; nothing reads them any more |
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | **yes** | two **different** random strings, 32+ chars each (`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`) |
 | `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` | no | optional (defaults `15m` / `30d`) |
 | `COOKIE_SECURE` | no | `true` |
@@ -263,7 +308,7 @@ Otherwise the page loads but its API calls go to `localhost:5000`, which is cros
 Only needed if the database you deploy contains rows pointing at `/uploads/...`.
 
 ```bash
-# in .env (temporarily): DB_* of the database to migrate, STORAGE_DRIVER=r2 and the R2_* values
+# in .env (temporarily): DATABASE_URL of the database to migrate, STORAGE_DRIVER=r2 and the R2_* values
 npm run storage:migrate-r2                 # dry run: lists what would happen, changes nothing
 npm run storage:migrate-r2 -- --apply      # asks you to type MIGRATE, uploads, then updates each row
 ```
@@ -274,6 +319,7 @@ Run it from the machine that still has `./uploads`.
 
 ## 11. Known limits / what is still unverified
 
+- **The PostgreSQL migration was written and unit-tested without access to a live Neon or PostgreSQL server.** The SQL, the schema and the one-time importer have not been executed against a real database by the author; run §1.4–§1.6 and `npm run smoke` and treat any failure as a bug to report.
 - **Nothing here has been deployed or tested on Vercel or against live R2 by the author of this change.** The `services` schema, the service-scoped `rewrites`, the Node `entrypoint` and the "Services" project preset were checked against Vercel's current documentation, not by a deployment.
 - The Express service is entered through `src/app.js` (`"entrypoint"` in `vercel.json`), which exports the app and never calls `listen`. If Vercel rejects that path, remove the `entrypoint` line; Vercel then auto-detects the root `server.js` (the supported "port listener" pattern), which also works but runs its start-up database check.
 - Vercel environment variables are shared by both services' builds (only `VITE_*` values are embedded in the browser bundle).

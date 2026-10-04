@@ -5,23 +5,22 @@ const { pool } = require('../config/db');
 /**
  * Finds the existing buyer<->agent conversation for a property, or creates
  * one — atomically, via UNIQUE(buyer_id, agent_user_id, property_id) +
- * ON DUPLICATE KEY, same safe pattern as location.model.js's findOrCreate.
+ * ON CONFLICT, same safe pattern as location.model.js's findOrCreate.
  */
 async function findOrCreate({ buyerId, agentUserId, propertyId, inquiryId }) {
-  const [result] = await pool.query(
+  const { rows } = await pool.query(
     `INSERT INTO conversations (buyer_id, agent_user_id, property_id, inquiry_id)
      VALUES (:buyerId, :agentUserId, :propertyId, :inquiryId)
-     ON DUPLICATE KEY UPDATE conversation_id = LAST_INSERT_ID(conversation_id)`,
+     ON CONFLICT (buyer_id, agent_user_id, property_id)
+     DO UPDATE SET conversation_id = conversations.conversation_id
+     RETURNING *`,
     { buyerId, agentUserId, propertyId: propertyId || null, inquiryId: inquiryId || null }
   );
-  const [rows] = await pool.query('SELECT * FROM conversations WHERE conversation_id = :id LIMIT 1', {
-    id: result.insertId,
-  });
   return rows[0];
 }
 
 async function findById(conversationId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT * FROM conversations WHERE conversation_id = :conversationId LIMIT 1',
     { conversationId }
   );
@@ -33,7 +32,7 @@ async function listForUser(userId) {
   // dashboard preview keeps working). Adds what an inbox needs: a truncated
   // last-message preview + its sender, the other party's avatar/role, and a
   // little property context (location, price, primary image).
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT c.*, p.title AS property_title,
             p.price AS property_price, p.listing_type AS property_listing_type,
             l.neighborhood AS property_neighborhood, l.city AS property_city,

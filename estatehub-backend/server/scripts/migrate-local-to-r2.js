@@ -82,7 +82,8 @@ async function main() {
 
   for (const src of SOURCES) {
     const cols = [src.idCol, src.refCol, src.ownerCol, ...(src.extraCols || [])];
-    const [rows] = await pool.query(
+    // table/column names come from the fixed SOURCES list above (never user input); the pattern is a literal.
+    const { rows } = await pool.query(
       `SELECT ${[...new Set(cols)].join(', ')} FROM ${src.table} WHERE ${src.refCol} LIKE '/uploads/%'`
     );
     console.log(`[migrate] ${src.label}: ${rows.length} row(s) still pointing at local files`);
@@ -136,11 +137,11 @@ async function main() {
         console.log(`[migrate] uploaded ${tag} -> ${key}`);
       }
       // Compare-and-set: only update if the row still holds the value we read.
-      const [result] = await pool.query(
-        `UPDATE ${src.table} SET ${src.refCol} = ? WHERE ${src.idCol} = ? AND ${src.refCol} = ?`,
+      const result = await pool.query(
+        `UPDATE ${src.table} SET ${src.refCol} = $1 WHERE ${src.idCol} = $2 AND ${src.refCol} = $3`,
         [newRef, row[src.idCol], oldRef]
       );
-      if (result.affectedRows === 1) totals.updated += 1;
+      if (result.rowCount === 1) totals.updated += 1;
       else console.warn(`[migrate] ${tag}: row changed while migrating; left as is (the uploaded object is unreferenced)`);
     } catch (err) {
       totals.failed += 1;

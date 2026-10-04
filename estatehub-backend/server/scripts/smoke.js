@@ -5,7 +5,7 @@
 /**
  * EstateHub live API smoke / security / timezone test.
  *
- * Runs against a REAL running backend and the REAL MySQL database behind it. It is NOT part of
+ * Runs against a REAL running backend and the REAL PostgreSQL (Neon) database behind it. It is NOT part of
  * `npm test` (which uses in-memory fakes, scoped to tests/ so this file is never swept into it —
  * do not rename this file to match *-test.js / *.test.js / test-*.js, or `node --test`'s default
  * discovery will pick it up and 'fail' since it correctly refuses to run without SMOKE_CONFIRM).
@@ -38,7 +38,7 @@
  * backend (the limiter is in-memory) or wait 15 minutes.
  *
  * TIMEZONE: to test server-side zone independence, run the whole thing twice, starting the
- * BACKEND once with TZ=UTC and once with TZ=Asia/Karachi. The MySQL session-zone checks in section
+ * BACKEND once with TZ=UTC and once with TZ=Asia/Karachi. The PostgreSQL session-zone checks in section
  * 9 run on dedicated connections regardless.
  *
  * Statuses: PASS, FAIL, SKIP (precondition missing), BLOCKED (rate-limited), INFO (observation).
@@ -53,7 +53,7 @@ const crypto = require('node:crypto');
 
 const env = require('../src/config/env'); // loads ./.env, fails fast if required vars are missing
 const { pool } = require('../src/config/db');
-const mysql = require('mysql2/promise');
+const { Client: PgClient } = require('pg');
 const { UPLOAD_ROOT } = require('../src/config/paths');
 const { generateSecureToken, hashToken } = require('../src/utils/tokenHash');
 const passwordResetTokenModel = require('../src/models/passwordResetToken.model');
@@ -262,9 +262,9 @@ async function s0_preflight() {
     const res = await api('GET', '/health');
     assert(res.headers.get('x-content-type-options') === 'nosniff', 'x-content-type-options: nosniff header missing');
   });
-  await check('MySQL reachable through the backend pool; report zones', async () => {
-    const [[row]] = await pool.query('SELECT @@session.time_zone AS session_tz, @@global.time_zone AS global_tz, @@system_time_zone AS system_tz, VERSION() AS version');
-    return { info: `mysql ${row.version}; session=${row.session_tz} global=${row.global_tz} system=${row.system_tz}` };
+  await check('PostgreSQL reachable through the backend pool; report version and session zone', async () => {
+    const { rows: [row] } = await pool.query("SELECT version() AS version, current_setting('TimeZone') AS session_tz");
+    return { info: `${String(row.version).split(' on ')[0]}; session TimeZone=${row.session_tz}` };
   });
   await check('lookups available (property types + amenities)', async () => {
     const t = data(await api('GET', '/lookups/property-types'));
@@ -289,7 +289,7 @@ async function s1_auth() {
     const email = `smoke.${RUN_ID}.evil@${EMAIL_DOMAIN}`;
     const res = await api('POST', '/auth/register', { json: { email, password: PASSWORD, firstName: 'E', lastName: 'Vil', role: 'admin' } });
     assertStatus(res, [400, 422], 'role=admin: ');
-    const [rows] = await pool.query('SELECT user_id FROM users WHERE email = ?', [email]);
+    const { rows } = await pool.query('SELECT user_id FROM users WHERE email = $1', [email]);
     assert(rows.length === 0, 'a user row was created for a rejected admin registration');
   });
   await check('user objects never expose password hashes', async () => {
@@ -358,7 +358,7 @@ async function s2_refresh() {
     assertStatus(await api('POST', '/auth/refresh', { cookie: S.buyer.cookie }), 401);
   });
   await check('refresh tokens are stored hashed (no raw value in DB, sha-256 hex) with correct expiry', async () => {
-    const [rows] = await pool.query('SELECT token_hash, UNIX_TIMESTAMP(expires_at) AS exp_unix, revoked_at FROM refresh_tokens WHERE user_id = ?', [S.agentA.id]);
+    const { rows } = await pool.query('SELECT token_hash, EXTRACT(EPOCH FROM expires_at) AS exp_unix, revoked_at FROM refresh_tokens WHERE user_id = $1', [S.agentA.id]);
     assert(rows.length > 0, 'no refresh token row for the agent');
     for (const r of rows) {
       assert(/^[0-9a-f]{64}$/.test(r.token_hash), 'token_hash is not a 64-char hex digest');
@@ -449,7 +449,7 @@ async function s4_propertyOwnership() {
   await check('BUYER cannot create a property: POST /properties -> 403, and NO row is created', async () => {
     const res = await api('POST', '/properties', { token: S.buyer.token, json: payload(' (buyer attempt)') });
     assertStatus(res, 403);
-    const [rows] = await pool.query('SELECT property_id FROM properties WHERE listed_by_user_id = ?', [S.buyer.id]);
+    const { rows } = await pool.query('SELECT property_id FROM properties WHERE listed_by_user_id = $1', [S.buyer.id]);
     assert(rows.length === 0, `${rows.length} property row(s) exist for the buyer`);
   });
   await check('AGENT A can create a property -> 201, not publicly visible until approved', async () => {
@@ -497,10 +497,10 @@ async function s4_propertyOwnership() {
     });
   }
   await check("Agent A's listing is unchanged after Agent B / buyer attempts (title, archived state, amenities)", async () => {
-    const [[row]] = await pool.query('SELECT title, status FROM properties WHERE property_id = ?', [id]);
+    const { rows: [row] } = await pool.query('SELECT title, status FROM properties WHERE property_id = $1', [id]);
     assert(row.title.endsWith('] listing'), `title changed to "${row.title}"`);
     assert(row.status !== 'archived', 'listing was archived by a non-owner');
-    const [am] = await pool.query('SELECT amenity_id FROM property_amenities WHERE property_id = ?', [id]);
+    const { rows: am } = await pool.query('SELECT amenity_id FROM property_amenities WHERE property_id = $1', [id]);
     assert(am.length === 0, 'amenities were written by a non-owner');
   });
   await check('AGENT A (owner) can PUT amenities and PUT own title -> 200', async () => {
@@ -529,8 +529,8 @@ async function s5_crossRoleFlow() {
     return;
   }
   await check('approval wrote a property_approved row to admin_action_log', async () => {
-    const [rows] = await pool.query(
-      "SELECT log_id FROM admin_action_log WHERE action_type = 'property_approved' AND target_type = 'property' AND target_id = ?", [id]);
+    const { rows } = await pool.query(
+      "SELECT log_id FROM admin_action_log WHERE action_type = 'property_approved' AND target_type = 'property' AND target_id = $1", [id]);
     assert(rows.length >= 1, 'no property_approved audit row for this listing');
   });
   await check('ADMIN re-approving an already-approved listing is refused (409, not a silent 200)', async () => {
@@ -538,7 +538,7 @@ async function s5_crossRoleFlow() {
   });
   await check('ADMIN reject requires a reason (empty reason -> 400/422; status unchanged)', async () => {
     assertStatus(await api('PUT', `/properties/${id}/reject`, { token: S.admin.token, json: { reason: '   ' } }), [400, 422]);
-    const [[row]] = await pool.query('SELECT status FROM properties WHERE property_id = ?', [id]);
+    const { rows: [row] } = await pool.query('SELECT status FROM properties WHERE property_id = $1', [id]);
     assert(row.status === 'active', `listing status changed to ${row.status} by an invalid reject`);
   });
   await check('ADMIN reject of a nonexistent listing -> 404', async () => {
@@ -594,7 +594,7 @@ async function s5_crossRoleFlow() {
     const res = await api('POST', '/appointments', { token: S.buyer.token, json: { propertyId: id, scheduledAt: `${local}+05:00`, durationMinutes: 30, notes: 'smoke' } });
     assertStatus(res, 201);
     appointmentId = data(res).appointment.appointment_id;
-    const [[row]] = await pool.query('SELECT scheduled_at FROM appointments WHERE appointment_id = ?', [appointmentId]);
+    const { rows: [row] } = await pool.query('SELECT scheduled_at FROM appointments WHERE appointment_id = $1', [appointmentId]);
     assert(String(row.scheduled_at).slice(0, 19) === expectedUtc, `DB has ${row.scheduled_at}, expected ${expectedUtc}`);
     const api_at = String(data(res).appointment.scheduled_at).slice(0, 19).replace('T', ' ');
     assert(api_at === expectedUtc, `API returned ${data(res).appointment.scheduled_at}, expected UTC ${expectedUtc}`);
@@ -614,7 +614,7 @@ async function s5_crossRoleFlow() {
 
 async function s6_suspensionAndReset() {
   // Ordered so the buyer's flows above are done; reset first, then suspension.
-  section('6. Password reset (real MySQL token rows)');
+  section('6. Password reset (real PostgreSQL token rows)');
   const email = S.buyer.email;
   let genericBody = null;
   await check('forgot-password: existing vs unknown email -> identical status and body (non-enumerating)', async () => {
@@ -625,8 +625,8 @@ async function s6_suspensionAndReset() {
     assert(JSON.stringify(known.body) === JSON.stringify(unknown.body), 'response bodies differ between known and unknown email');
     genericBody = known.body;
   });
-  await check('forgot-password stored a HASHED token that expires in ~30 minutes (UNIX_TIMESTAMP check)', async () => {
-    const [rows] = await pool.query('SELECT token_hash, used_at, UNIX_TIMESTAMP(expires_at) - UNIX_TIMESTAMP() AS secs_left FROM password_reset_tokens WHERE user_id = ? ORDER BY reset_token_id DESC LIMIT 1', [S.buyer.id]);
+  await check('forgot-password stored a HASHED token that expires in ~30 minutes (EXTRACT(EPOCH) check)', async () => {
+    const { rows } = await pool.query('SELECT token_hash, used_at, EXTRACT(EPOCH FROM expires_at) - EXTRACT(EPOCH FROM NOW()) AS secs_left FROM password_reset_tokens WHERE user_id = $1 ORDER BY reset_token_id DESC LIMIT 1', [S.buyer.id]);
     assert(rows.length === 1, 'no reset token row created (is Gmail configured? the row is created before sending, so this is a real failure)');
     assert(/^[0-9a-f]{64}$/.test(rows[0].token_hash), 'token_hash is not a sha-256 hex digest');
     assert(rows[0].used_at === null, 'fresh token is already marked used');
@@ -779,7 +779,7 @@ async function s8_documentsAndUploads() {
     for (const p of probes) {
       const r = await rawGet(p);
       assert(r.status !== 200, `${p} -> 200`);
-      assert(!/JWT_ACCESS_SECRET|DB_PASSWORD|module\.exports|%PDF-/.test(r.body), `${p} leaked file content`);
+      assert(!/JWT_ACCESS_SECRET|DATABASE_URL|module\.exports|%PDF-/.test(r.body), `${p} leaked file content`);
     }
   });
   await check('archive the smoke test property (cleanup)', async () => {
@@ -788,53 +788,44 @@ async function s8_documentsAndUploads() {
 }
 
 async function s9_timezone() {
-  section('9. Timezone verification on REAL MySQL (TIMESTAMP columns, exact app SQL)');
-  const dbCfg = { host: env.db.host, port: env.db.port, user: env.db.user, password: env.db.password, database: env.db.name, dateStrings: true };
+  section('9. Timezone verification on REAL PostgreSQL (TIMESTAMPTZ columns, exact app SQL)');
 
-  await check('backend pool sessions run in UTC (SET time_zone applied by config/db.js)', async () => {
-    const results = await Promise.all(Array.from({ length: 5 }, () => pool.query('SELECT @@session.time_zone AS tz, SLEEP(0.05) AS s')));
-    const zones = new Set(results.map(([[r]]) => r.tz));
-    assert(zones.size === 1 && zones.has('+00:00'), `pool session time_zone values: ${[...zones].join(', ')}`);
-  });
+  // Dedicated connections (not the app pool) so each can run under a different session TimeZone.
+  const connect = async (zone) => {
+    const c = new PgClient({ connectionString: env.db.url, ...(env.db.ssl ? { ssl: env.db.ssl } : {}) });
+    await c.connect();
+    await c.query(`SET TIME ZONE '${zone}'`); // zone comes from the fixed list below, never user input
+    return c;
+  };
 
-  for (const zone of ['+00:00', '+05:00', '-05:00']) {
-    await check(`session ${zone}: reset-token SQL and refresh-token SQL (both FROM_UNIXTIME/NOW) valid ~30 min, expired ones rejected`, async () => {
-      const conn = await mysql.createConnection(dbCfg);
+  for (const zone of ['UTC', 'Asia/Karachi', 'America/New_York']) {
+    await check(`session ${zone}: reset-token SQL and refresh-token SQL (NOW()+interval / to_timestamp) valid ~30 min, expired ones rejected`, async () => {
+      const conn = await connect(zone);
       try {
-        await conn.query(`SET time_zone = '${zone}'`);
-        await conn.query('CREATE TEMPORARY TABLE tz_check (label VARCHAR(30) PRIMARY KEY, expires_at TIMESTAMP NOT NULL)');
-        // exact expressions used by passwordResetToken.model.js and refreshToken.model.js (both fixed
-        // to this session-timezone-independent idiom; see passwordResetToken.model.js's header comment
-        // for why the previous DATE_ADD(UTC_TIMESTAMP(), ...) / UTC_TIMESTAMP() idiom was NOT safe here)
+        await conn.query('CREATE TEMPORARY TABLE tz_check (label TEXT PRIMARY KEY, expires_at TIMESTAMPTZ NOT NULL)');
+        // exact expressions used by passwordResetToken.model.js and refreshToken.model.js
         await conn.query(`INSERT INTO tz_check VALUES
-          ('reset_ok', FROM_UNIXTIME(UNIX_TIMESTAMP() + 1800)),
-          ('reset_expired', FROM_UNIXTIME(UNIX_TIMESTAMP() - 300)),
-          ('refresh_ok', FROM_UNIXTIME(UNIX_TIMESTAMP() + 1800)),
-          ('refresh_expired', FROM_UNIXTIME(UNIX_TIMESTAMP() - 300))`);
-        const [rows] = await conn.query(`SELECT label,
+          ('reset_ok',        NOW() + (1800::double precision * INTERVAL '1 second')),
+          ('reset_expired',   NOW() + (-300::double precision * INTERVAL '1 second')),
+          ('refresh_ok',      to_timestamp((EXTRACT(EPOCH FROM NOW()) + 1800)::double precision)),
+          ('refresh_expired', to_timestamp((EXTRACT(EPOCH FROM NOW()) - 300)::double precision))`);
+        const { rows } = await conn.query(`SELECT label,
             (expires_at > NOW()) AS gt_now,
-            UNIX_TIMESTAMP(expires_at) - UNIX_TIMESTAMP() AS secs
+            EXTRACT(EPOCH FROM expires_at) - EXTRACT(EPOCH FROM NOW()) AS secs
           FROM tz_check`);
         const by = Object.fromEntries(rows.map((r) => [r.label, r]));
-        assert(Number(by.reset_ok.gt_now) === 1, 'reset token valid within window should compare as valid');
-        assert(Number(by.reset_expired.gt_now) === 0, 'expired reset token compared as still valid');
-        assert(Number(by.refresh_ok.gt_now) === 1, 'refresh token valid within window should compare as valid');
-        assert(Number(by.refresh_expired.gt_now) === 0, 'expired refresh token compared as still valid');
+        assert(by.reset_ok.gt_now === true, 'reset token valid within window should compare as valid');
+        assert(by.reset_expired.gt_now === false, 'expired reset token compared as still valid');
+        assert(by.refresh_ok.gt_now === true, 'refresh token valid within window should compare as valid');
+        assert(by.refresh_expired.gt_now === false, 'expired refresh token compared as still valid');
         assert(Math.abs(Number(by.reset_ok.secs) - 1800) <= 5 && Math.abs(Number(by.refresh_ok.secs) - 1800) <= 5, `absolute expiry off: reset ${by.reset_ok.secs}s, refresh ${by.refresh_ok.secs}s (expected ~1800)`);
-        return { detail: `reset ${by.reset_ok.secs}s / refresh ${by.refresh_ok.secs}s left` };
+        return { detail: `reset ${Math.round(by.reset_ok.secs)}s / refresh ${Math.round(by.refresh_ok.secs)}s left` };
       } finally { await conn.end(); }
     });
   }
-  await check('OBSERVATION: the OLD reset-token idiom (DATE_ADD(UTC_TIMESTAMP()) written to a TIMESTAMP column) under +05:00', async () => {
-    const conn = await mysql.createConnection(dbCfg);
-    try {
-      await conn.query("SET time_zone = '+05:00'");
-      await conn.query('CREATE TEMPORARY TABLE tz_old (expires_at TIMESTAMP NOT NULL)');
-      // A token meant to last 30 more minutes, using the idiom this file used before the fix.
-      await conn.query('INSERT INTO tz_old VALUES (DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 MINUTE))');
-      const [[r]] = await conn.query('SELECT (expires_at > UTC_TIMESTAMP()) AS old_idiom_says_valid, UNIX_TIMESTAMP(expires_at) - UNIX_TIMESTAMP() AS secs_left FROM tz_old');
-      return { info: `a token meant to last 30 more minutes: old idiom says valid=${r.old_idiom_says_valid}, ${r.secs_left}s left (expected 1 / ~1800 if the old idiom were safe — a negative secs_left demonstrates the corruption this file used to be exposed to under a non-UTC session)` };
-    } finally { await conn.end(); }
+  await check('pool returns timestamptz as UTC "YYYY-MM-DD HH:MM:SS" strings (API format) whatever the session zone', async () => {
+    const { rows: [r] } = await pool.query("SELECT TIMESTAMPTZ '2026-01-01 05:30:00+05:30' AS t");
+    assert(r.t === '2026-01-01 00:00:00', `got ${r.t}, expected 2026-01-01 00:00:00`);
   });
   await check('app model round-trip: password-reset token +30 valid / -5 expired via passwordResetToken.model', async () => {
     if (!S.agentA.id) return { skip: 'agent A registration did not complete earlier in this run (see section 1)' };
@@ -844,7 +835,7 @@ async function s9_timezone() {
       await passwordResetTokenModel.insertToken({ userId: S.agentA.id, tokenHash: stale, expiresInMinutes: -5 });
       assert(await passwordResetTokenModel.findValidByHash(good), 'valid token not found as valid');
       assert(!(await passwordResetTokenModel.findValidByHash(stale)), 'expired token found as valid');
-    } finally { await pool.query('DELETE FROM password_reset_tokens WHERE token_hash IN (?, ?)', [good, stale]); }
+    } finally { await pool.query('DELETE FROM password_reset_tokens WHERE token_hash IN ($1, $2)', [good, stale]); }
   });
   await check('app model round-trip: refresh token +30 min valid / -5 min expired via refreshToken.model', async () => {
     if (!S.agentA.id) return { skip: 'agent A registration did not complete earlier in this run (see section 1)' };
@@ -855,18 +846,23 @@ async function s9_timezone() {
       await refreshTokenModel.insertToken(pool, { userId: S.agentA.id, tokenHash: stale, expiresAtUnixSeconds: now - 300 });
       assert(await refreshTokenModel.findValidByHash(good), 'valid refresh token not found as valid');
       assert(!(await refreshTokenModel.findValidByHash(stale)), 'expired refresh token found as valid (timezone skew?)');
-    } finally { await pool.query('DELETE FROM refresh_tokens WHERE token_hash IN (?, ?)', [good, stale]); }
+    } finally { await pool.query('DELETE FROM refresh_tokens WHERE token_hash IN ($1, $2)', [good, stale]); }
   });
-  await check('appointments.scheduled_at is DATETIME (no session-zone conversion) — column types', async () => {
-    const [cols] = await pool.query("SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND ((TABLE_NAME='appointments' AND COLUMN_NAME='scheduled_at') OR (TABLE_NAME IN ('refresh_tokens','password_reset_tokens') AND COLUMN_NAME='expires_at'))");
-    return { info: cols.map((c) => `${c.TABLE_NAME}.${c.COLUMN_NAME}=${c.DATA_TYPE}`).join(', ') };
+  await check('column types: appointments.scheduled_at is TIMESTAMP (UTC digits), token expiries are TIMESTAMPTZ', async () => {
+    const { rows } = await pool.query("SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND ((table_name = 'appointments' AND column_name = 'scheduled_at') OR (table_name IN ('refresh_tokens','password_reset_tokens') AND column_name = 'expires_at'))");
+    const by = Object.fromEntries(rows.map((c) => [`${c.table_name}.${c.column_name}`, c.data_type]));
+    assert(by['appointments.scheduled_at'] === 'timestamp without time zone', `appointments.scheduled_at is ${by['appointments.scheduled_at']}`);
+    assert(by['refresh_tokens.expires_at'] === 'timestamp with time zone', `refresh_tokens.expires_at is ${by['refresh_tokens.expires_at']}`);
+    assert(by['password_reset_tokens.expires_at'] === 'timestamp with time zone', `password_reset_tokens.expires_at is ${by['password_reset_tokens.expires_at']}`);
+    return { info: rows.map((c) => `${c.table_name}.${c.column_name}=${c.data_type}`).join(', ') };
   });
 }
 
 async function s10_secretsAndStatic() {
   section('10. Secrets must not reach the frontend');
   await check('no backend secret value appears in estatehub-react/src or estatehub-react/dist (values never printed)', async () => {
-    const secrets = [env.jwt.accessSecret, env.jwt.refreshSecret, env.db.password, process.env.GMAIL_PASS].filter((v) => v && v.length >= 8);
+    const dbPassword = (() => { try { return decodeURIComponent(new URL(env.db.url).password); } catch (err) { return ''; } })();
+    const secrets = [env.jwt.accessSecret, env.jwt.refreshSecret, dbPassword, env.db.url, process.env.GMAIL_PASS].filter((v) => v && v.length >= 8);
     const root = path.join(__dirname, '..', '..', '..', 'estatehub-react');
     const dirs = ['src', 'dist', 'public'].map((d) => path.join(root, d)).filter((d) => fs.existsSync(d));
     if (dirs.length === 0) return { skip: 'estatehub-react folder not found next to estatehub-backend' };
@@ -925,7 +921,7 @@ async function report() {
   console.log(`Auth-rate-limited calls used this run: ${authLimitedCalls} of 20 per 15 min`);
   results.filter((r) => r.status === 'FAIL').forEach((r) => console.log(`  FAIL: [${r.section}] ${r.name} — ${r.detail}`));
   results.filter((r) => r.status === 'BLOCKED').forEach((r) => console.log(`  BLOCKED: [${r.section}] ${r.name}`));
-  console.log('\nCleanup (run manually in MySQL if you want the smoke data gone; review before running):');
+  console.log('\nCleanup (run manually in PostgreSQL if you want the smoke data gone; review before running):');
   console.log(`  DELETE FROM users WHERE email LIKE 'smoke.${RUN_ID}.%@${EMAIL_DOMAIN}';   -- or every run: LIKE 'smoke.%@${EMAIL_DOMAIN}'`);
   console.log('  (dependent rows are removed only if your foreign keys cascade; otherwise delete children first or leave the accounts suspended.)');
   if (process.env.SMOKE_REPORT) {

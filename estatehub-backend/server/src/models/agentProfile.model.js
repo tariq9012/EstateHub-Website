@@ -3,7 +3,7 @@
 const { pool } = require('../config/db');
 
 async function findByAgentId(agentId) {
-  const [rows] = await pool.query('SELECT * FROM agent_profiles WHERE agent_id = :agentId LIMIT 1', { agentId });
+  const { rows } = await pool.query('SELECT * FROM agent_profiles WHERE agent_id = :agentId LIMIT 1', { agentId });
   return rows[0] || null;
 }
 

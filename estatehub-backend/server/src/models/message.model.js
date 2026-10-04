@@ -3,19 +3,19 @@
 const { pool } = require('../config/db');
 
 async function createMessage({ conversationId, senderId, messageText }) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     `INSERT INTO messages (conversation_id, sender_id, message_text)
-     VALUES (:conversationId, :senderId, :messageText)`,
+     VALUES (:conversationId, :senderId, :messageText) RETURNING message_id`,
     { conversationId, senderId, messageText }
   );
   await pool.query('UPDATE conversations SET last_message_at = NOW() WHERE conversation_id = :conversationId', {
     conversationId,
   });
-  return result.insertId;
+  return result.rows[0].message_id;
 }
 
 async function listForConversation(conversationId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT m.*, u.first_name, u.last_name
      FROM messages m JOIN users u ON u.user_id = m.sender_id
      WHERE m.conversation_id = :conversationId

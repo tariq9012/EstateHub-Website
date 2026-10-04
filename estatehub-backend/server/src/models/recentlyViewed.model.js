@@ -7,14 +7,14 @@ async function recordView(userId, propertyId) {
   await pool.query(
     `INSERT INTO recently_viewed_properties (user_id, property_id)
      VALUES (:userId, :propertyId)
-     ON DUPLICATE KEY UPDATE viewed_at = NOW()`,
+     ON CONFLICT (user_id, property_id) DO UPDATE SET viewed_at = NOW()`,
     { userId, propertyId }
   );
 }
 
 async function listForUser(userId, limit = 20) {
   const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT rv.view_id, rv.viewed_at,
             p.property_id, p.title, p.price, p.listing_type, p.bedrooms, p.bathrooms, p.status,
             pt.name AS type_name, l.city, l.country,

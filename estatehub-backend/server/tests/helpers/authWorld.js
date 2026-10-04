@@ -143,15 +143,11 @@ function makeAuthWorld() {
     email: { from: 'EstateHub <no-reply@test.com>' },
   };
 
+  // pool.withTransaction(fn) just runs fn with a tx whose query() returns an empty pg-style result; the
+  // stubbed models ignore the executor and write straight to the world.
   w.pool = {
-    getConnection: async () => ({
-      beginTransaction: async () => {},
-      commit: async () => {},
-      rollback: async () => {},
-      release: () => {},
-      query: async () => [[]],
-    }),
-    query: async () => [[]],
+    withTransaction: async (fn) => fn({ query: async () => ({ rows: [], rowCount: 0 }) }),
+    query: async () => ({ rows: [], rowCount: 0 }),
   };
 
   return w;

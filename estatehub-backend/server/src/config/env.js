@@ -7,10 +7,7 @@ require('dotenv').config();
 const { validateStorageEnv, driverName } = require('../services/storage');
 
 const required = [
-  'DB_HOST',
-  'DB_PORT',
-  'DB_NAME',
-  'DB_USER',
+  'DATABASE_URL',
   'JWT_ACCESS_SECRET',
   'JWT_REFRESH_SECRET',
 ];
@@ -86,8 +83,27 @@ const cookieSecure = process.env.COOKIE_SECURE === 'true';
 const cookieDomain = process.env.COOKIE_DOMAIN || (isProduction ? undefined : 'localhost');
 
 const problems = [...validateStorageEnv()];
+
+// --- PostgreSQL (Neon) connection string ---
+// The value is NEVER echoed into an error message (it contains the password).
+let databaseUrl = null;
+try {
+  databaseUrl = new URL(String(process.env.DATABASE_URL || '').trim());
+} catch (err) {
+  problems.push('DATABASE_URL is not a valid URL (expected postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require)');
+}
+if (databaseUrl) {
+  if (!/^postgres(ql)?:$/.test(databaseUrl.protocol)) {
+    problems.push(`DATABASE_URL must start with postgresql:// (found "${databaseUrl.protocol}//") — EstateHub now runs on PostgreSQL (Neon), not MySQL`);
+  }
+  const hostIsLocal = /^(localhost|127\.0\.0\.1|\[?::1\]?)$/i.test(databaseUrl.hostname);
+  if (isProduction && hostIsLocal) {
+    problems.push('DATABASE_URL points at localhost in production — a deployed server cannot reach your machine. Use the Neon connection string');
+  }
+}
 if (cookieSameSite === 'none' && !cookieSecure) problems.push('COOKIE_SAMESITE=none requires COOKIE_SECURE=true');
 if (isProduction) {
+  if (process.env.DATABASE_SSL === 'false') problems.push('DATABASE_SSL=false is not allowed in production');
   if (!cookieSecure) problems.push('COOKIE_SECURE must be true in production');
   if (!process.env.FRONTEND_URL && !process.env.CLIENT_ORIGIN && vercelOrigins.length === 0) {
     problems.push('FRONTEND_URL (or CLIENT_ORIGIN) is required in production');
@@ -123,22 +139,20 @@ const env = {
       : (onVercel ? 1 : false),
 
   db: {
-    host: process.env.DB_HOST,
-    port: parseInt(process.env.DB_PORT, 10) || 3306,
-    name: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD || '',
+    url: String(process.env.DATABASE_URL || '').trim(),
     // Every Vercel function instance holds its own pool, so keep it small there (local default stays 10).
-    connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10) || (onVercel ? 2 : 10),
-    connectTimeoutMs: parseInt(process.env.DB_CONNECT_TIMEOUT_MS, 10) || 10000,
-    // Managed MySQL (PlanetScale/Aiven/TiDB/RDS ...) normally requires TLS: DB_SSL=true. DB_SSL_CA may hold the
-    // provider's CA certificate PEM (use \n for newlines). DB_SSL_REJECT_UNAUTHORIZED=false is an explicit opt-out.
-    ssl: process.env.DB_SSL === 'true'
-      ? {
-          rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
-          ...(process.env.DB_SSL_CA ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n') } : {}),
-        }
-      : undefined,
+    // Keep (instances x poolMax) below the database's connection limit, or use Neon's pooled (-pooler) host.
+    poolMax: parseInt(process.env.DATABASE_POOL_MAX, 10) || (onVercel ? 2 : 10),
+    connectTimeoutMs: parseInt(process.env.DATABASE_CONNECT_TIMEOUT_MS, 10) || 10000,
+    idleTimeoutMs: onVercel ? 10000 : 30000,
+    // TLS is verified (rejectUnauthorized: true) for every remote host. It only applies when the URL itself has
+    // no `sslmode=` (Neon URLs include sslmode=require, which pg already treats as full verification).
+    // DATABASE_SSL=false turns TLS off for a LOCAL non-TLS Postgres only; it is refused in production.
+    ssl: (() => {
+      if (process.env.DATABASE_SSL === 'false') return false;
+      const local = databaseUrl && /^(localhost|127\.0\.0\.1|\[?::1\]?)$/i.test(databaseUrl.hostname);
+      return local ? undefined : { rejectUnauthorized: true };
+    })(),
   },
 
   jwt: {

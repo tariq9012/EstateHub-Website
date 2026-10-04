@@ -3,68 +3,68 @@
 const { pool } = require('../config/db');
 
 async function getDashboardStats() {
-  const [[userStats]] = await pool.query(
+  const { rows: [userStats] } = await pool.query(
     `SELECT
-       COUNT(*) AS totalUsers,
-       SUM(role = 'buyer') AS totalBuyers,
-       SUM(role = 'agent') AS totalAgents,
-       SUM(role = 'admin') AS totalAdmins,
-       SUM(status = 'active') AS activeUsers,
-       SUM(status = 'suspended') AS suspendedUsers
+       COUNT(*) AS "totalUsers",
+       COUNT(*) FILTER (WHERE role = 'buyer') AS "totalBuyers",
+       COUNT(*) FILTER (WHERE role = 'agent') AS "totalAgents",
+       COUNT(*) FILTER (WHERE role = 'admin') AS "totalAdmins",
+       COUNT(*) FILTER (WHERE status = 'active') AS "activeUsers",
+       COUNT(*) FILTER (WHERE status = 'suspended') AS "suspendedUsers"
      FROM users`
   );
 
-  const [[propertyStats]] = await pool.query(
+  const { rows: [propertyStats] } = await pool.query(
     `SELECT
-       COUNT(*) AS totalProperties,
-       SUM(status = 'active') AS activeProperties,
-       SUM(status = 'pending_review') AS pendingProperties,
-       SUM(status = 'rejected') AS rejectedProperties,
-       SUM(status = 'sold') AS soldProperties,
-       SUM(status = 'archived') AS archivedProperties
+       COUNT(*) AS "totalProperties",
+       COUNT(*) FILTER (WHERE status = 'active') AS "activeProperties",
+       COUNT(*) FILTER (WHERE status = 'pending_review') AS "pendingProperties",
+       COUNT(*) FILTER (WHERE status = 'rejected') AS "rejectedProperties",
+       COUNT(*) FILTER (WHERE status = 'sold') AS "soldProperties",
+       COUNT(*) FILTER (WHERE status = 'archived') AS "archivedProperties"
      FROM properties`
   );
 
-  const [[agentStats]] = await pool.query(
+  const { rows: [agentStats] } = await pool.query(
     `SELECT
-       COUNT(*) AS totalAgents,
-       SUM(verification_status = 'pending') AS pendingVerifications,
-       SUM(verification_status = 'verified') AS verifiedAgents,
-       SUM(verification_status = 'unverified') AS unverifiedAgents
+       COUNT(*) AS "totalAgents",
+       COUNT(*) FILTER (WHERE verification_status = 'pending') AS "pendingVerifications",
+       COUNT(*) FILTER (WHERE verification_status = 'verified') AS "verifiedAgents",
+       COUNT(*) FILTER (WHERE verification_status = 'unverified') AS "unverifiedAgents"
      FROM agents`
   );
 
-  const [[renewalStats]] = await pool.query(
+  const { rows: [renewalStats] } = await pool.query(
     `SELECT
-       SUM(status = 'submitted') AS submittedRenewals,
-       SUM(status = 'under_review') AS underReviewRenewals,
-       SUM(status = 'missing_documents') AS missingDocRenewals
+       COUNT(*) FILTER (WHERE status = 'submitted') AS "submittedRenewals",
+       COUNT(*) FILTER (WHERE status = 'under_review') AS "underReviewRenewals",
+       COUNT(*) FILTER (WHERE status = 'missing_documents') AS "missingDocRenewals"
      FROM license_renewals`
   );
 
-  const [[inquiryStats]] = await pool.query(
-    `SELECT COUNT(*) AS totalInquiries, SUM(status = 'new') AS newInquiries FROM inquiries`
+  const { rows: [inquiryStats] } = await pool.query(
+    `SELECT COUNT(*) AS "totalInquiries", COUNT(*) FILTER (WHERE status = 'new') AS "newInquiries" FROM inquiries`
   );
 
   // Small real-data previews so the dashboard can show "Pending property approvals",
   // "Pending agent verifications", "Pending license renewals" and "Recent admin actions"
   // sections without a second round-trip from the frontend.
-  const [pendingProperties] = await pool.query(
+  const { rows: pendingProperties } = await pool.query(
     `SELECT p.property_id, p.title, p.price, p.created_at, l.city, l.country
      FROM properties p JOIN locations l ON l.location_id = p.location_id
      WHERE p.status = 'pending_review' ORDER BY p.created_at ASC LIMIT 5`
   );
-  const [pendingAgents] = await pool.query(
+  const { rows: pendingAgents } = await pool.query(
     `SELECT a.agent_id, a.license_number, a.created_at, u.first_name, u.last_name
      FROM agents a JOIN users u ON u.user_id = a.user_id
      WHERE a.verification_status = 'pending' ORDER BY a.created_at ASC LIMIT 5`
   );
-  const [pendingRenewals] = await pool.query(
+  const { rows: pendingRenewals } = await pool.query(
     `SELECT lr.renewal_id, lr.status, lr.submitted_at, u.first_name, u.last_name
      FROM license_renewals lr JOIN agents a ON a.agent_id = lr.agent_id JOIN users u ON u.user_id = a.user_id
      WHERE lr.status IN ('submitted', 'under_review') ORDER BY lr.submitted_at ASC LIMIT 5`
   );
-  const [recentActions] = await pool.query(
+  const { rows: recentActions } = await pool.query(
     `SELECT al.log_id, al.action_type, al.target_type, al.target_id, al.notes, al.created_at,
             u.first_name AS admin_first_name, u.last_name AS admin_last_name
      FROM admin_action_log al
@@ -99,7 +99,7 @@ async function listAllProperties({ status, listingType, search, page = 1, limit 
     params.listingType = listingType;
   }
   if (search) {
-    conditions.push('(p.title LIKE :search OR l.city LIKE :search OR l.country LIKE :search)');
+    conditions.push('(p.title ILIKE :search OR l.city ILIKE :search OR l.country ILIKE :search)');
     params.search = `%${search}%`;
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -108,7 +108,7 @@ async function listAllProperties({ status, listingType, search, page = 1, limit 
   const safePage = Math.max(parseInt(page, 10) || 1, 1);
   const offset = (safePage - 1) * safeLimit;
 
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT p.property_id, p.title, p.price, p.status, p.listing_type, p.created_at, p.rejection_reason,
             pt.name AS type_name, l.city, l.country,
             u.first_name AS lister_first_name, u.last_name AS lister_last_name
@@ -122,7 +122,7 @@ async function listAllProperties({ status, listingType, search, page = 1, limit 
     params
   );
 
-  const [countRows] = await pool.query(
+  const { rows: countRows } = await pool.query(
     `SELECT COUNT(*) AS total FROM properties p JOIN locations l ON l.location_id = p.location_id ${where}`,
     params
   );
@@ -146,7 +146,7 @@ async function listAllUsers({ role, status, search, page = 1, limit = 20 } = {})
     params.status = status;
   }
   if (search) {
-    conditions.push('(first_name LIKE :search OR last_name LIKE :search OR email LIKE :search)');
+    conditions.push('(first_name ILIKE :search OR last_name ILIKE :search OR email ILIKE :search)');
     params.search = `%${search}%`;
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -155,7 +155,7 @@ async function listAllUsers({ role, status, search, page = 1, limit = 20 } = {})
   const safePage = Math.max(parseInt(page, 10) || 1, 1);
   const offset = (safePage - 1) * safeLimit;
 
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT user_id, email, role, first_name, last_name, status, created_at
      FROM users
      ${where}
@@ -164,7 +164,7 @@ async function listAllUsers({ role, status, search, page = 1, limit = 20 } = {})
     params
   );
 
-  const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM users ${where}`, params);
+  const { rows: countRows } = await pool.query(`SELECT COUNT(*) AS total FROM users ${where}`, params);
   const total = countRows[0].total;
 
   return {
@@ -190,7 +190,7 @@ async function listActionLog({ targetType, page = 1, limit = 30 } = {}) {
   const safePage = Math.max(parseInt(page, 10) || 1, 1);
   const offset = (safePage - 1) * safeLimit;
 
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT al.*, u.first_name AS admin_first_name, u.last_name AS admin_last_name
      FROM admin_action_log al
      JOIN admin_users au ON au.admin_id = al.admin_id
@@ -201,7 +201,7 @@ async function listActionLog({ targetType, page = 1, limit = 30 } = {}) {
     params
   );
 
-  const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM admin_action_log al ${where}`, params);
+  const { rows: countRows } = await pool.query(`SELECT COUNT(*) AS total FROM admin_action_log al ${where}`, params);
   const total = countRows[0].total;
 
   return {

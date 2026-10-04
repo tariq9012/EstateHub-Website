@@ -2,6 +2,8 @@
 
 const { pool } = require('../config/db');
 
+const UNIQUE_VIOLATION = '23505'; // PostgreSQL SQLSTATE unique_violation
+
 async function add(userId, propertyId) {
   try {
     await pool.query('INSERT INTO favorites (user_id, property_id) VALUES (:userId, :propertyId)', {
@@ -10,21 +12,21 @@ async function add(userId, propertyId) {
     });
     return true;
   } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') return false; // already favorited — not an error
+    if (err.code === UNIQUE_VIOLATION) return false; // already favorited — not an error
     throw err;
   }
 }
 
 async function remove(userId, propertyId) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     'DELETE FROM favorites WHERE user_id = :userId AND property_id = :propertyId',
     { userId, propertyId }
   );
-  return result.affectedRows > 0;
+  return result.rowCount > 0;
 }
 
 async function listForUser(userId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT f.favorite_id, f.created_at AS favorited_at,
             p.property_id, p.title, p.price, p.listing_type, p.bedrooms, p.bathrooms,
             p.area_sqft, p.status,

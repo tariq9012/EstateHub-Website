@@ -3,9 +3,9 @@
 const { pool } = require('../config/db');
 
 async function create({ userId, type, title, body, relatedEntityType, relatedEntityId }) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     `INSERT INTO notifications (user_id, type, title, body, related_entity_type, related_entity_id)
-     VALUES (:userId, :type, :title, :body, :relatedEntityType, :relatedEntityId)`,
+     VALUES (:userId, :type, :title, :body, :relatedEntityType, :relatedEntityId) RETURNING notification_id`,
     {
       userId,
       type,
@@ -15,7 +15,7 @@ async function create({ userId, type, title, body, relatedEntityType, relatedEnt
       relatedEntityId: relatedEntityId || null,
     }
   );
-  return result.insertId;
+  return result.rows[0].notification_id;
 }
 
 async function listForUser(userId, { unreadOnly = false, limit = 30 } = {}) {
@@ -24,7 +24,7 @@ async function listForUser(userId, { unreadOnly = false, limit = 30 } = {}) {
   const params = { userId };
   if (unreadOnly) conditions.push('is_read = FALSE');
 
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT * FROM notifications WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ${safeLimit}`,
     params
   );
@@ -32,11 +32,11 @@ async function listForUser(userId, { unreadOnly = false, limit = 30 } = {}) {
 }
 
 async function markAsRead(notificationId, userId) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     'UPDATE notifications SET is_read = TRUE WHERE notification_id = :notificationId AND user_id = :userId',
     { notificationId, userId }
   );
-  return result.affectedRows > 0;
+  return result.rowCount > 0;
 }
 
 async function markAllAsRead(userId) {
@@ -46,7 +46,7 @@ async function markAllAsRead(userId) {
 }
 
 async function countUnread(userId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT COUNT(*) AS cnt FROM notifications WHERE user_id = :userId AND is_read = FALSE',
     { userId }
   );

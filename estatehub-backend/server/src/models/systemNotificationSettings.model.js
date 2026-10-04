@@ -3,12 +3,12 @@
 const { pool } = require('../config/db');
 
 async function listAll() {
-  const [rows] = await pool.query('SELECT * FROM system_notification_settings ORDER BY event_key ASC');
+  const { rows } = await pool.query('SELECT * FROM system_notification_settings ORDER BY event_key ASC');
   return rows;
 }
 
 async function findByEventKey(eventKey) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT * FROM system_notification_settings WHERE event_key = :eventKey LIMIT 1',
     { eventKey }
   );

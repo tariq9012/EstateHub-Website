@@ -5,13 +5,15 @@
 
 const { pool } = require('../config/db');
 
+const UNIQUE_VIOLATION = '23505'; // PostgreSQL SQLSTATE unique_violation
+
 async function createComparison(userId) {
-  const [result] = await pool.query('INSERT INTO property_comparisons (user_id) VALUES (:userId)', { userId });
-  return result.insertId;
+  const result = await pool.query('INSERT INTO property_comparisons (user_id) VALUES (:userId) RETURNING comparison_id', { userId });
+  return result.rows[0].comparison_id;
 }
 
 async function findLatestForUser(userId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT * FROM property_comparisons WHERE user_id = :userId ORDER BY created_at DESC LIMIT 1',
     { userId }
   );
@@ -19,7 +21,7 @@ async function findLatestForUser(userId) {
 }
 
 async function findById(comparisonId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     'SELECT * FROM property_comparisons WHERE comparison_id = :comparisonId LIMIT 1',
     { comparisonId }
   );
@@ -34,21 +36,21 @@ async function addItem(comparisonId, propertyId) {
     );
     return true;
   } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') return false;
+    if (err.code === UNIQUE_VIOLATION) return false;
     throw err;
   }
 }
 
 async function removeItem(comparisonId, propertyId) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     'DELETE FROM property_comparison_items WHERE comparison_id = :comparisonId AND property_id = :propertyId',
     { comparisonId, propertyId }
   );
-  return result.affectedRows > 0;
+  return result.rowCount > 0;
 }
 
 async function listItems(comparisonId) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT p.property_id, p.title, p.price, p.listing_type, p.bedrooms, p.bathrooms, p.area_sqft, p.status,
             pt.name AS type_name, l.city, l.country,
             (SELECT image_url FROM property_images pi WHERE pi.property_id = p.property_id AND pi.is_primary = TRUE LIMIT 1) AS primary_image_url

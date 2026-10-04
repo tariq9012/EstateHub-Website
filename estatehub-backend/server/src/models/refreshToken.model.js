@@ -3,33 +3,24 @@
 const { pool } = require('../config/db');
 
 /**
- * `expiresAtUnixSeconds` is the JWT's own `exp` claim (an absolute Unix timestamp — unambiguous,
- * no timezone attached). We deliberately do NOT pass a JS-formatted "YYYY-MM-DD HH:mm:ss" string
- * here: `new Date(...).toISOString().slice(0,19).replace('T',' ')` produces UTC clock digits with
- * no timezone marker, and MySQL then reinterprets that naive string using the CONNECTION's session
- * time_zone (often the OS/system zone, not UTC) — silently shifting the stored expiry by the
- * session's UTC offset. `FROM_UNIXTIME()` is the correct idiom for the WRITE: it turns the absolute
- * instant into session-zone clock digits, which is exactly what a TIMESTAMP column expects, so the
- * stored instant is right under any session zone. The READ (findValidByHash below) must therefore
- * compare against a session-zone value too — `NOW()`, not `UTC_TIMESTAMP()` (UTC digits, which
- * would skew expiry by the session's UTC offset). config/db.js also pins every connection's
- * session time_zone to UTC. See the Auth Hardening phase report for how the original bug was caught
- * this was caught (a 30-minute password-reset token failing validation immediately, on a machine
- * whose timezone is far enough from UTC that the old bug's few-hour skew mattered — refresh tokens
- * share this exact pattern but their 30-day TTL made the same skew invisible in practice).
+ * `expiresAtUnixSeconds` is the JWT's own `exp` claim (an absolute Unix timestamp — unambiguous, no timezone
+ * attached). to_timestamp() turns it into a timestamptz, i.e. an absolute instant, and refresh_tokens.expires_at
+ * is a TIMESTAMPTZ, so the stored value and the `expires_at > NOW()` comparison below are both exact regardless
+ * of any session TimeZone. (The MySQL version needed FROM_UNIXTIME + a session time_zone pin to get this
+ * property; PostgreSQL's timestamptz has it by construction.)
  */
 async function insertToken(executor, { userId, tokenHash, expiresAtUnixSeconds }) {
-  const [result] = await executor.query(
+  const result = await executor.query(
     `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-     VALUES (:userId, :tokenHash, FROM_UNIXTIME(:expiresAtUnixSeconds))`,
+     VALUES (:userId, :tokenHash, to_timestamp(:expiresAtUnixSeconds::double precision)) RETURNING token_id`,
     { userId, tokenHash, expiresAtUnixSeconds }
   );
-  return result.insertId;
+  return result.rows[0].token_id;
 }
 
 /** Returns the token row only if it exists, isn't revoked, and hasn't expired. */
 async function findValidByHash(tokenHash) {
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT * FROM refresh_tokens
      WHERE token_hash = :tokenHash AND revoked_at IS NULL AND expires_at > NOW()
      LIMIT 1`,

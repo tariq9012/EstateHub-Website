@@ -58,17 +58,18 @@ const DETAIL_SELECT = `
  * @param {Date} now    the clock used for "upcoming" checks (same clock the controller used)
  */
 async function createIfAvailable({ propertyId, userId, agentId, start, durationMinutes, notes, now = new Date() }) {
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    const [agentRows] = await connection.query('SELECT agent_id FROM agents WHERE agent_id = :agentId FOR UPDATE', { agentId });
+  // One transaction on ONE dedicated client (pool.withTransaction): BEGIN/COMMIT/ROLLBACK and client release are
+  // handled there, so every statement below sees the agent row lock and nothing leaks a connection.
+  return pool.withTransaction(async (tx) => {
+    // Row lock on the agent: serializes concurrent bookings for the same agent (FOR UPDATE works the same in PostgreSQL).
+    const { rows: agentRows } = await tx.query('SELECT agent_id FROM agents WHERE agent_id = :agentId FOR UPDATE', { agentId });
     if (!agentRows[0]) {
       const err = new Error('Agent not found');
       err.statusCode = 404;
       throw err;
     }
 
+    // scheduled_at is TIMESTAMP (no zone) holding UTC clock digits; these are explicit UTC 'YYYY-MM-DD HH:MM:SS' strings.
     const startSql = toMysqlUtc(start);
     const endSql = toMysqlUtc(addMinutes(start, durationMinutes));
     // Any overlapping existing viewing must start after (start - longest possible duration);
@@ -76,10 +77,10 @@ async function createIfAvailable({ propertyId, userId, agentId, start, durationM
     const windowStartSql = toMysqlUtc(addMinutes(start, -MAX_DURATION_MINUTES));
     const nowSql = toMysqlUtc(now);
 
-    const [duplicates] = await connection.query(
+    const { rows: duplicates } = await tx.query(
       `SELECT appointment_id FROM appointments
        WHERE user_id = :userId AND property_id = :propertyId
-         AND status IN ('requested','confirmed') AND scheduled_at > :nowSql
+         AND status IN ('requested','confirmed') AND scheduled_at > :nowSql::timestamp
        LIMIT 1 FOR UPDATE`,
       { userId, propertyId, nowSql }
     );
@@ -90,12 +91,12 @@ async function createIfAvailable({ propertyId, userId, agentId, start, durationM
       );
     }
 
-    const [overlaps] = await connection.query(
+    const { rows: overlaps } = await tx.query(
       `SELECT appointment_id FROM appointments
        WHERE agent_id = :agentId
          AND status IN ('requested','confirmed')
-         AND scheduled_at >= :windowStartSql AND scheduled_at < :endSql
-         AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > :startSql
+         AND scheduled_at >= :windowStartSql::timestamp AND scheduled_at < :endSql::timestamp
+         AND scheduled_at + (duration_minutes * INTERVAL '1 minute') > :startSql::timestamp
        LIMIT 1 FOR UPDATE`,
       { agentId, windowStartSql, endSql, startSql }
     );
@@ -106,45 +107,35 @@ async function createIfAvailable({ propertyId, userId, agentId, start, durationM
       );
     }
 
-    const [result] = await connection.query(
+    const { rows } = await tx.query(
       `INSERT INTO appointments (property_id, user_id, agent_id, scheduled_at, duration_minutes, notes)
-       VALUES (:propertyId, :userId, :agentId, :startSql, :durationMinutes, :notes)`,
+       VALUES (:propertyId, :userId, :agentId, :startSql::timestamp, :durationMinutes, :notes)
+       RETURNING appointment_id`,
       { propertyId, userId, agentId, startSql, durationMinutes, notes: notes || null }
     );
-
-    await connection.commit();
-    return result.insertId;
-  } catch (err) {
-    try {
-      await connection.rollback();
-    } catch (rollbackErr) {
-      // connection may already be gone; the original error is what matters
-    }
-    throw err;
-  } finally {
-    connection.release();
-  }
+    return rows[0].appointment_id;
+  });
 }
 
 /** Raw row — used for authorization + transition checks. */
 async function findById(appointmentId) {
-  const [rows] = await pool.query('SELECT * FROM appointments WHERE appointment_id = :appointmentId LIMIT 1', { appointmentId });
+  const { rows } = await pool.query('SELECT * FROM appointments WHERE appointment_id = :appointmentId LIMIT 1', { appointmentId });
   return rows[0] || null;
 }
 
 /** Enriched row (see DETAIL_SELECT). */
 async function findDetailedById(appointmentId) {
-  const [rows] = await pool.query(`${DETAIL_SELECT} WHERE ap.appointment_id = :appointmentId LIMIT 1`, { appointmentId });
+  const { rows } = await pool.query(`${DETAIL_SELECT} WHERE ap.appointment_id = :appointmentId LIMIT 1`, { appointmentId });
   return rows[0] || null;
 }
 
 async function listForUser(userId) {
-  const [rows] = await pool.query(`${DETAIL_SELECT} WHERE ap.user_id = :userId ORDER BY ap.scheduled_at ASC`, { userId });
+  const { rows } = await pool.query(`${DETAIL_SELECT} WHERE ap.user_id = :userId ORDER BY ap.scheduled_at ASC`, { userId });
   return rows;
 }
 
 async function listForAgent(agentId) {
-  const [rows] = await pool.query(`${DETAIL_SELECT} WHERE ap.agent_id = :agentId ORDER BY ap.scheduled_at ASC`, { agentId });
+  const { rows } = await pool.query(`${DETAIL_SELECT} WHERE ap.agent_id = :agentId ORDER BY ap.scheduled_at ASC`, { agentId });
   return rows;
 }
 
@@ -154,11 +145,11 @@ async function listForAgent(agentId) {
  * overwrite each other. Returns true if this call performed the change.
  */
 async function transitionStatus(appointmentId, fromStatus, toStatus) {
-  const [result] = await pool.query(
+  const result = await pool.query(
     'UPDATE appointments SET status = :toStatus WHERE appointment_id = :appointmentId AND status = :fromStatus',
     { appointmentId, fromStatus, toStatus }
   );
-  return result.affectedRows === 1;
+  return result.rowCount === 1;
 }
 
 module.exports = { createIfAvailable, findById, findDetailedById, listForUser, listForAgent, transitionStatus, ACTIVE_STATUSES };

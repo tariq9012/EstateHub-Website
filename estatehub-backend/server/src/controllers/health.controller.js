@@ -8,7 +8,7 @@ const { sharedStoreConfigured } = require('../middleware/rateLimiter');
 
 /**
  * GET /api/health
- * Confirms the API process is up AND that it can reach MySQL. (Unchanged contract.)
+ * Confirms the API process is up AND that it can reach PostgreSQL (Neon). (Unchanged contract.)
  */
 async function getHealth(req, res) {
   const dbCheck = await testConnection();
@@ -35,7 +35,7 @@ function tokenMatches(provided, expected) {
 
 /**
  * GET /api/health/ready
- * Deployment readiness: API alive, MySQL reachable, storage configured, shared rate-limit store configured.
+ * Deployment readiness: API alive, PostgreSQL reachable, storage configured, shared rate-limit store configured.
  * Reports booleans and variable NAMES only — never values. It does not touch R2 unless the caller proves it is
  * an operator by sending `x-health-token: <HEALTH_CHECK_TOKEN>` (when that variable is set) together with
  * `?deep=1`, which additionally probes both buckets (HeadBucket). Without a token it stays cheap and safe.

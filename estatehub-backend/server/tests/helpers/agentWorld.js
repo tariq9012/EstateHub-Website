@@ -180,11 +180,11 @@ function makeAgentWorld() {
 function loadAgentControllers(world) {
   const stub = (rel, exports) => { const f = require.resolve(path.join(SRC, rel)); require.cache[f] = { id: f, filename: f, loaded: true, exports, children: [], paths: [] }; };
   Object.entries(world.models).forEach(([name, exports]) => stub(`models/${name}.model.js`, exports));
-  // Only property.controller#createProperty uses the pool directly (a transaction wrapping
+  // Only property.controller#createProperty uses the pool directly (pool.withTransaction wrapping
   // locationModel.findOrCreate + propertyModel.createProperty, both stubbed above to ignore the
-  // executor and write straight to the world) — so the "connection" only needs these four methods.
-  const fakeConnection = { query: async () => [{ insertId: 0 }], beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {} };
-  stub('config/db.js', { pool: { getConnection: async () => fakeConnection, query: async () => [[]] } });
+  // executor and write straight to the world) — so the fake only needs withTransaction + query.
+  const fakeTx = { query: async () => ({ rows: [], rowCount: 0 }) };
+  stub('config/db.js', { pool: { withTransaction: async (fn) => fn(fakeTx), query: async () => ({ rows: [], rowCount: 0 }) } });
   const load = (name) => { const f = require.resolve(path.join(SRC, 'controllers', `${name}.controller.js`)); delete require.cache[f]; return require(f); };
   return { property: load('property'), verification: load('verification'), renewal: load('licenseRenewal'), agent: load('agent'), inquiry: load('inquiry'), admin: load('admin') };
 }
