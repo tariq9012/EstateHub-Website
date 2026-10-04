@@ -3,11 +3,19 @@
 // httpOnly refresh cookie automatically (credentials: 'include'), and
 // transparently retries once via /auth/refresh if a request comes back 401.
 
+import { resolveProductionApiBase } from './apiBase.js';
+
 // Where the API lives:
 //   production  same origin, '/api' (Vercel Services routes /api/* to the Express service) — nothing to configure.
+//               A VITE_API_URL pointing at localhost/127.0.0.1 is ignored in production builds (see apiBase.js and
+//               vite.config.js); a non-loopback VITE_API_URL still wins, e.g. to point a build at a different API host.
 //   development VITE_API_URL from .env (e.g. http://localhost:5000/api); if unset, the local backend on port 5000.
-// A VITE_API_URL set at build time still wins everywhere, e.g. to point a build at a different API host.
-const BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000/api' : '/api');
+//               Under `vercel dev` set VITE_API_URL=/api (see DEPLOYMENT.md).
+// The localhost literal sits directly under `import.meta.env.DEV`, which Vite replaces with `false` in production
+// builds, so the dead branch (and the literal) is removed from the shipped bundle.
+const BASE_URL = import.meta.env.DEV
+  ? (import.meta.env.VITE_API_URL || 'http://localhost:5000/api')
+  : resolveProductionApiBase(import.meta.env.VITE_API_URL);
 
 let accessToken = null;
 let onUnauthorized = null;

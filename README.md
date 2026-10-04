@@ -129,8 +129,9 @@ npm run build      # outputs to estatehub-react/dist/ (not committed to source c
 npm run preview
 ```
 
-`VITE_API_URL` **must** be set explicitly for a production build — without it the app falls
-back to `http://localhost:5000/api`, which will not work once deployed.
+In production builds `VITE_API_URL` should be **unset**: the app then calls the same-origin `/api`. A `VITE_API_URL` that points at
+localhost/127.0.0.1 is ignored (with a build-log warning), and `npm run build` fails if the finished bundle still contains
+`localhost:5000`. Only set `VITE_API_URL` in production to point at a *different, public* API host.
 
 ## Backend tests
 
