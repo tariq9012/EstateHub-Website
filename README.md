@@ -129,9 +129,10 @@ npm run build      # outputs to estatehub-react/dist/ (not committed to source c
 npm run preview
 ```
 
-In production builds `VITE_API_URL` should be **unset**: the app then calls the same-origin `/api`. A `VITE_API_URL` that points at
-localhost/127.0.0.1 is ignored (with a build-log warning), and `npm run build` fails if the finished bundle still contains
-`localhost:5000`. Only set `VITE_API_URL` in production to point at a *different, public* API host.
+Production builds **ignore `VITE_API_URL` completely** and always call the same-origin `/api`: `vite.config.js` injects the API base
+at build time (blank for `vite build`), so no environment variable can redirect a deployed site. `VITE_API_URL` only affects the dev
+server (`npm run dev`: default `http://localhost:5000/api`; `vercel dev`: set it to `/api`). `npm run build` also fails if the finished
+bundle contains `localhost:5000`, `127.0.0.1:5000` or `[::1]:5000`, and prints where in the bundle it found it.
 
 ## Backend tests
 

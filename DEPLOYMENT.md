@@ -33,7 +33,7 @@ modules (`/@vite/client`, `/@react-refresh`, `/src/main.jsx`). In production tha
 built files exist, so those module requests were rewritten and the page stayed blank. React routes here never contain a dot, so none are affected.
 
 **Same origin ⇒ simpler auth.** The browser calls `/api/...` on the same origin it was loaded from. Production builds of the
-frontend default to `/api` (`src/api/apiClient.js`); `VITE_API_URL` is only for local development. Because the refresh cookie is
+frontend default to `/api` (`src/api/apiClient.js`); `VITE_API_URL` is used only by the local dev server; production builds ignore it. Because the refresh cookie is
 first-party, use `COOKIE_SAMESITE=lax`, `COOKIE_SECURE=true` and **no** `COOKIE_DOMAIN` (host-only cookie, the safest scope; cookie path `/api/auth`).
 CORS is no longer involved for site→API calls (same origin); the allowlist remains for local development and an optional custom domain.
 `POST /api/auth/refresh` and `/api/auth/logout` still reject any request whose `Origin` header is not on the allowlist (CSRF guard); on Vercel
@@ -236,7 +236,7 @@ Add them for **Production**. For **Preview**, either leave them unset or point t
 ### C. Frontend / build-time (service `estatehub-react`)
 | Variable | Secret? | Notes |
 |---|---|---|
-| `VITE_API_URL` | no | **Do not set in production.** Production builds use the same-origin `/api`. It exists only for local development (`http://localhost:5000/api`). |
+| `VITE_API_URL` | no | **Ignored by production builds** (they always call the same-origin `/api`), so setting it in Vercel has no effect. It exists only for the local dev server (`http://localhost:5000/api`, or `/api` under `vercel dev`). |
 
 Scripts only (never set in Vercel): `SMOKE_BASE_URL`, `SMOKE_CONFIRM`, `SMOKE_ADMIN_EMAIL`, `SMOKE_ADMIN_PASSWORD`, `SMOKE_REPORT`.
 
